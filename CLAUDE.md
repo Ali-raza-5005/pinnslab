@@ -52,6 +52,17 @@ CMA-ES/DE serious-optimizer baseline · mechanism ablation · >=5 seeds,
 median+IQR, explicit failure rate · equal tuning budget across methods.
 
 ## Current status
-Bootstrap phase. Build order in DESIGN.md §9. Start with `utils/seeding`,
-`registry/`, `training/checkpoint`, `training/trainer` — nothing else — then the
-Burgers golden test.
+Bootstrap phase. Build order in DESIGN.md §9. **Steps 1 and 2 are done**:
+`utils/`, `registry/`, `training/` (checkpoint, trainer, build), `components.py`,
+`geometry/adapters.py`, `models/mlp.py`, `physics/diffops.py`, `eval/metrics.py`,
+`benchmarks/burgers.py`, and the Burgers golden test. 244 tests — unit ~53s,
+golden ~87s.
+
+**Next: step 3** — the Kaggle runner (≤20-line notebook, install-from-tag,
+`run_matrix.csv` claim/run/checkpoint/push/mark-done), proven against a killed
+session. Then step 4 (`viz/style.py` + figure script), then step 5 (`search/`).
+
+Two things to settle before the first real sweep, both in TESTS_TODO.md:
+checkpoint retention, and the `resample_every`-plus-resume gap (collocation
+points are not checkpointed, so an interrupted resampling run resumes on the
+wrong cloud — it lands directly on paper 1).

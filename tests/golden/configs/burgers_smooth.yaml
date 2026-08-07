@@ -1,0 +1,88 @@
+# Golden regression config: 1-D Burgers at a smoothed viscosity.
+#
+# Frozen. Changing any number here changes the config hash and invalidates the
+# threshold in tests/golden/test_burgers.py — if you need a different run, add
+# a new file rather than editing this one.
+#
+# nu is 10x the literature-standard 0.01/pi. That is deliberate and documented
+# in the test: at the standard viscosity the solution steepens into a near-shock
+# and a CPU-budget run lands anywhere in 0.06-0.20 rel-L2 across seeds, which is
+# far too noisy to assert on. Smoothed, the same budget converges to ~6e-4 with
+# a spread of under 1.5x across seeds, which is an assertion with teeth.
+name: golden-burgers-smooth
+seed: 0
+dtype: float64
+device: cpu
+deterministic: true
+
+problem:
+  name: burgers1d
+  options:
+    nu: 0.03183098861837907  # 0.1 / pi
+
+nets:
+  u:
+    arch: mlp
+    inputs: 2
+    outputs: 1
+    width: 20
+    depth: 3
+    activation: tanh
+    init: glorot_normal
+
+residuals:
+  # The PDE holds on the closure of the domain. Enforcing it on the interior
+  # alone costs ~6x in rel-L2 at the standard viscosity (see
+  # pinnslab/benchmarks/burgers.py) while *lowering* the loss.
+  pde:
+    kind: burgers1d.pde
+    points: [interior, initial, boundary]
+  ic:
+    kind: burgers1d.ic
+    points: initial
+  bc:
+    kind: burgers1d.bc
+    points: boundary
+
+sampling:
+  points:
+    interior:
+      region: interior
+      n: 800
+    initial:
+      region: initial
+      n: 50
+    boundary:
+      region: boundary
+      n: 25
+
+weighting:
+  kind: mean
+
+stages:
+  - name: adam
+    steps: 1000
+    optimizers:
+      - name: adam
+        lr: 0.001
+  - name: lbfgs
+    steps: 150
+    optimizers:
+      - name: lbfgs
+        lr: 1.0
+
+eval:
+  best_metric: rel_l2
+  best_mode: min
+
+logging:
+  trace:
+    every: 500
+    record_first: true
+    record_last: true
+
+checkpoint:
+  every_seconds: null
+  every_steps: 100000
+  save_best: true
+  save_last: true
