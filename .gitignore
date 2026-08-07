@@ -1,0 +1,18 @@
+# Run outputs are append-only and live outside version control (DESIGN.md §11).
+# Small precious rows go to a paper-NN-results repo; large artifacts to Kaggle Datasets.
+results/
+analysis/
+*.pt
+*.pt.tmp
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+.venv/
+venv/
+.env

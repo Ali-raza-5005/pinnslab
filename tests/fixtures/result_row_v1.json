@@ -1,0 +1,30 @@
+{
+  "best_metrics": {
+    "l2_relative": 0.0031415
+  },
+  "config": null,
+  "config_hash": "3f2a1c9d4b6e8071",
+  "device_profile": "t4",
+  "dtype": "float64",
+  "error": "non-finite loss at step 18321",
+  "final_metrics": {
+    "l2_relative": "inf",
+    "loss": "nan"
+  },
+  "git_dirty": false,
+  "git_sha": "81073d9c0a2f4e6b8d1a3c5e7f9b0d2a4c6e8f01",
+  "gpu_name": "Tesla T4",
+  "pinnslab_version": "0.1.0",
+  "run_id": "20260801T101500Z_3f2a1c9d_s7_ab12cd",
+  "seed": 7,
+  "status": "diverged",
+  "steps_completed": 18321,
+  "tags": {
+    "paper": "p1",
+    "sweep": "sampling"
+  },
+  "timestamp_utc": "2026-08-01T10:15:00Z",
+  "timings": {
+    "train_seconds": 812.4
+  }
+}

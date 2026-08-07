@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pinnslab"
+dynamic = ["version"]
+description = "Personal PINN methods research infrastructure. Not for external adoption."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ali" }]
+
+# Core install stays light enough for a Kaggle offline wheel install.
+dependencies = [
+    "torch>=2.2",
+    "deepxde>=1.12",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+# Aggregation/figures are DESIGN.md §9 steps 4-5; kept out of the core install
+# so Kaggle sessions do not pull pandas/pyarrow/matplotlib they never use.
+analysis = ["pandas>=2.2", "pyarrow>=16.0", "matplotlib>=3.8"]
+
+[tool.hatch.version]
+path = "pinnslab/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pinnslab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "unit: fast CPU-only tests (<60s total)",
+    "golden: regression tests against frozen benchmark targets (<2 min, CPU)",
+]
+filterwarnings = ["error::DeprecationWarning:pinnslab.*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

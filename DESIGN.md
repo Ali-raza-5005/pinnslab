@@ -111,23 +111,38 @@ Keep volatile pieces as flat, near-copy-pasteable ~40-line files. Duplication in
 the volatile column is cheap; wrong abstraction there kills the library.
 
 ```python
-@dataclass
-class RunConfig:
+class RunConfig(Spec):
+    problem: ProblemSpec | None           # which frozen benchmark (geometry, BCs, reference)
     nets: dict[str, NetSpec]              # 1..N networks, named (multi-net, XPINN, per-field)
     extra_params: dict[str, ParamSpec]    # inverse-problem trainable unknowns
     residuals: dict[str, ResidualSpec]    # named PDE residual terms (coupled systems)
     weighting: WeightingSpec              # dict[str, Tensor] -> scalar (per-term AND per-point)
-    output_transform: str | None          # hard-constraint BCs
+    sampling: SamplingSpec                # named point groups: {"interior": PointSetSpec, ...}
     stages: list[StageSpec]               # sequential/staged training
-    sampling: SamplingSpec
     eval: EvalSpec
 
-@dataclass
-class StageSpec:
+class StageSpec(Spec):
     optimizers: list[OptimizerSpec]       # each: param selector + min|max direction
     steps: int
     resample_every: int | None
 ```
+
+Three refinements made when this was implemented (2026-08-08), all within the
+sketch's intent:
+
+- **`output_transform` moved onto `NetSpec`**, not `RunConfig`. With multiple
+  networks a single run-level transform cannot express a per-field hard
+  constraint, and per-net degenerates to the run-level case when there is one net.
+- **`problem` was added.** The PDE is not a hyperparameter: geometry, BC/IC forms
+  and the reference solution live in a frozen `benchmarks/` module so every paper
+  compares against the same problem. The config chooses *which* benchmark plus the
+  physical constants that benchmark declares varyable.
+- **Every volatile field defaults to empty**, because `Trainer` takes `nets` and
+  `residual_fn` as plain callables — that IS the escape hatch this section
+  requires, and it is how the infrastructure tests drive the loop with no
+  `physics/` in existence. `assemble()` refuses to build anything the config did
+  not declare, so the defaults cannot become a way to smuggle hyperparameters
+  back into a script (rule 4).
 
 ### Two load-bearing decisions
 1. **Residual functions return per-point tensors of shape `(N,)`, never
@@ -162,6 +177,24 @@ a genuinely strange paper must be implementable entirely inside
 `paper-NN/src/method/` (custom registered component, or a custom `step_fn` in
 the worst case) without editing `pinnslab`.
 
+The `@register_*` decorators live in **`pinnslab/components.py`**, NOT in
+`pinnslab/registry/`. Two unrelated senses of the word collided: §3's `registry/`
+is *run provenance* (Run object, config hashing, results schema). Separate
+modules, no shared meaning.
+
+### What the config hash covers (decided 2026-07-31)
+`RunConfig.identity_hash()` hashes the condition, not the invocation. It
+**excludes** `seed`, `device`, `name`, `tags`, `logging`, `checkpoint`:
+
+- **seed is excluded** so that five seeds of one condition share a hash — the
+  §8 "median + IQR over >=5 seeds" analysis needs something to group on. A run
+  is therefore identified by the **pair `(config_hash, seed)`**, and both are on
+  every row; checkpoint resume verifies both.
+- **logging/checkpoint cadence is excluded** because changing how often you
+  write a trace point does not make it a different experiment, and pretending
+  it does would fragment the search layer's candidate cache.
+- **`dtype` IS hashed** — float32 and float64 results are not comparable (§5).
+
 ---
 
 ## 5. Numerics, determinism, hardware
@@ -181,10 +214,18 @@ the worst case) without editing `pinnslab`.
 - **`torch.compile` OFF by default**, behind a config flag. Double-backward
   through compiled graphs breaks silently across versions. Golden tests run it
   both on and off.
-- **L-BFGS is the biggest reproducibility hazard.** `torch.optim.LBFGS` is
-  full-batch, closure-based, does NOT checkpoint cleanly (history not in
-  state_dict). Design the Adam→L-BFGS handoff so L-BFGS fits inside one Kaggle
-  session; checkpoint AT the transition. Use `line_search_fn='strong_wolfe'`.
+- **L-BFGS checkpoints cleanly — measured, not assumed.** `torch.optim.LBFGS` is
+  full-batch and closure-based, but its curvature history (`old_dirs`,
+  `old_stps`, `ro`, `H_diag`, `prev_flat_grad`, `d`, `t`) *is* in `state_dict`,
+  so a mid-stage resume is bit-exact and needs no special handling. Verified on
+  torch 2.12 with and without `strong_wolfe`, and pinned by
+  `test_lbfgs_resume_is_bit_exact` — if a future torch moves that state out,
+  the test fails instead of the run silently becoming a different experiment.
+  An L-BFGS phase therefore does **not** have to fit inside one Kaggle session.
+  Still give L-BFGS its own stage (it re-evaluates the loss internally, so a
+  concurrent ascent optimizer would step from a different iterate) and use
+  `line_search_fn='strong_wolfe'` — without a line search it stalls or diverges
+  on PINN losses.
 - **Determinism** (`utils/seeding.py`, called by every run):
   ```python
   torch.use_deterministic_algorithms(True)   # env: CUBLAS_WORKSPACE_CONFIG=:4096:8
