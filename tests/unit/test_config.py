@@ -68,7 +68,7 @@ def test_a_fully_declared_config_validates():
     assert cfg.problem is not None
     assert cfg.problem.options["nu"] == 0.01
     assert cfg.nets["u"].inputs == 2
-    assert cfg.residuals["pde"].points == "interior"
+    assert cfg.residuals["pde"].points == ("interior",)
 
 
 # -- cross-field checks -------------------------------------------------------
@@ -85,6 +85,68 @@ def test_a_residual_naming_an_undeclared_point_group_is_rejected():
         burgers_like(
             residuals={"pde": ResidualSpec(kind="burgers1d", points="interor")}
         )
+
+
+def test_a_typo_inside_a_point_group_list_is_rejected():
+    with pytest.raises(ValidationError, match="initail"):
+        burgers_like(
+            residuals={
+                "pde": ResidualSpec(
+                    kind="burgers1d", points=["interior", "initail"]
+                )
+            }
+        )
+
+
+def test_a_bare_string_and_a_single_element_list_are_the_same_thing():
+    """YAML should stay writable as ``points: interior`` for the common case,
+    without that being a different experiment from ``points: [interior]``."""
+    bare = burgers_like(
+        residuals={"pde": ResidualSpec(kind="burgers1d", points="interior")},
+        weighting=WeightingSpec(kind="mean"),
+    )
+    listed = burgers_like(
+        residuals={"pde": ResidualSpec(kind="burgers1d", points=["interior"])},
+        weighting=WeightingSpec(kind="mean"),
+    )
+    assert bare.residuals["pde"].points == ("interior",)
+    assert bare.identity_hash() == listed.identity_hash()
+
+
+def test_a_residual_on_several_point_groups_validates():
+    """A PDE residual holds on the closed domain, not just the interior —
+    enforcing it on the interior alone costs ~6x in rel-L2 on Burgers, silently
+    and while *lowering* the loss."""
+    cfg = burgers_like(
+        residuals={
+            "pde": ResidualSpec(
+                kind="burgers1d", points=["interior", "initial"]
+            ),
+            "ic": ResidualSpec(kind="dirichlet", points="initial"),
+        }
+    )
+    assert cfg.residuals["pde"].points == ("interior", "initial")
+
+
+def test_a_residual_with_no_point_groups_is_rejected():
+    with pytest.raises(ValidationError, match="no point group"):
+        burgers_like(residuals={"pde": ResidualSpec(kind="burgers1d", points=[])})
+
+
+def test_the_point_groups_enter_the_config_hash():
+    """Interior-only and closed-domain enforcement are different experiments
+    with materially different accuracy; they must not share a hash."""
+    interior_only = burgers_like(
+        residuals={"pde": ResidualSpec(kind="burgers1d", points=["interior"])},
+        weighting=WeightingSpec(kind="mean"),
+    )
+    closed = burgers_like(
+        residuals={
+            "pde": ResidualSpec(kind="burgers1d", points=["interior", "initial"])
+        },
+        weighting=WeightingSpec(kind="mean"),
+    )
+    assert interior_only.identity_hash() != closed.identity_hash()
 
 
 def test_a_coefficient_on_a_misspelled_term_is_rejected():

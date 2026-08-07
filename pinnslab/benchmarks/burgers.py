@@ -16,6 +16,23 @@ transform). That is deliberate: the DeepXDE oracle this is validated against
 uses soft constraints, and a golden test comparing a hard-constrained run to a
 soft-constrained reference would be comparing two different problems.
 
+Enforce the PDE on the closed domain
+------------------------------------
+A config for this benchmark should give the ``pde`` term
+``points: [interior, initial, boundary]``, not ``interior`` alone. The PDE holds
+on the closure of the domain, and dropping the boundary and initial slices costs
+about **6x in rel-L2** (0.127 -> 0.020 at 15k Adam, measured 2026-08-08) — while
+*lowering* the training loss, because interior-only is simply an easier
+objective whose minimiser is not the true solution. Enforcing the residual at
+t=0 ties ``u_t`` there to spatial derivatives that the initial condition already
+pins, which is what propagates the IC forward.
+
+Stock DeepXDE does the same thing implicitly: its PDE is evaluated on
+``data.train_x_all``, which concatenates the boundary and initial points onto
+the interior ones. This cost a full debugging session to find precisely because
+it is invisible — same architecture, same optimizer, bit-identical residuals
+(verified elementwise against ``dde.grad``), and a *better* loss curve.
+
 The reference solution
 ----------------------
 Computed by Cole-Hopf, not shipped as a data file. The transformation

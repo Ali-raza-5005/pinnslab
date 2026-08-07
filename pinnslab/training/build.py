@@ -175,9 +175,24 @@ def _make_residual_fn(cfg: RunConfig, terms: dict[str, ResidualTerm]):
                 "no collocation points in state.scratch; build the trainer with "
                 "build_trainer(), which draws the first cloud before training"
             )
-        return {name: terms[name](state, points[groups[name]]) for name in terms}
+        return {
+            name: terms[name](state, _gather(points, groups[name])) for name in terms
+        }
 
     return residual_fn
+
+
+def _gather(
+    points: dict[str, torch.Tensor], names: tuple[str, ...]
+) -> torch.Tensor:
+    """The point groups a residual is enforced on, as one tensor.
+
+    Concatenated rather than evaluated separately so the term stays a single
+    ``(N,)`` vector and per-point weighting still sees one population.
+    """
+    if len(names) == 1:
+        return points[names[0]]
+    return torch.cat([points[name] for name in names], dim=0)
 
 
 def _make_resampler(cfg: RunConfig, problem: Problem, ctx: RuntimeContext):

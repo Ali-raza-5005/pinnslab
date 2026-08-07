@@ -28,7 +28,7 @@ from pinnslab.registry.config import (
 )
 from pinnslab.registry.run import Run
 from pinnslab.registry.schema import MetricSchedule
-from pinnslab.training.build import POINTS, assemble, build_trainer
+from pinnslab.training.build import POINTS, _gather, assemble, build_trainer
 from pinnslab.utils.device import configure_runtime
 
 pytestmark = pytest.mark.unit
@@ -44,7 +44,11 @@ def burgers_config(**overrides) -> RunConfig:
         "problem": ProblemSpec(name="burgers1d"),
         "nets": {"u": NetSpec(inputs=2, outputs=1, width=8, depth=2)},
         "residuals": {
-            "pde": ResidualSpec(kind="burgers1d.pde", points="interior"),
+            # The PDE holds on the closed domain; interior-only costs ~6x in
+            # rel-L2 on this benchmark (see ResidualSpec.points).
+            "pde": ResidualSpec(
+                kind="burgers1d.pde", points=["interior", "initial", "boundary"]
+            ),
             "ic": ResidualSpec(kind="burgers1d.ic", points="initial"),
             "bc": ResidualSpec(kind="burgers1d.bc", points="boundary"),
         },
@@ -115,9 +119,40 @@ def test_each_residual_gets_its_own_point_group(built):
 
     residuals = trainer.residual_fn(trainer.state)
 
-    assert residuals["pde"].shape == (64,)
+    assert residuals["pde"].shape == (64 + 16 + 8,)
     assert residuals["ic"].shape == (16,)
     assert residuals["bc"].shape == (8,)
+
+
+def test_a_multi_group_residual_concatenates_in_declared_order(built):
+    """Kept as one ``(N,)`` vector rather than evaluated per group, so per-point
+    weighting still sees a single population (CLAUDE.md rule 5)."""
+    cfg, ctx, run = built
+    trainer = build_trainer(cfg, ctx, run)
+    points = trainer.state.scratch[POINTS]
+
+    gathered = _gather(points, ("interior", "initial", "boundary"))
+
+    assert torch.equal(
+        gathered,
+        torch.cat([points["interior"], points["initial"], points["boundary"]], dim=0),
+    )
+
+
+def test_the_pde_is_enforced_on_the_points_the_config_names(built):
+    """The finding this whole mechanism exists for: enforcing the PDE on the
+    interior alone costs ~6x in rel-L2 on Burgers while *lowering* the loss,
+    because interior-only is simply an easier objective. Making the group list
+    explicit means the choice is hashed and visible in the results row rather
+    than buried in a framework's point bookkeeping."""
+    cfg, ctx, run = built
+    pde = cfg.residuals["pde"].model_copy(update={"points": ("interior",)})
+    interior_only = cfg.model_copy(
+        update={"residuals": {**cfg.residuals, "pde": pde}}
+    )
+    trainer = build_trainer(interior_only, ctx, run)
+
+    assert trainer.residual_fn(trainer.state)["pde"].shape == (64,)
 
 
 def test_it_trains_end_to_end(built):
