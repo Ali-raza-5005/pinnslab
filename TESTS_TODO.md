@@ -9,6 +9,23 @@ immediately instead of being queued.
 
 ---
 
+## suite budget (2026-08-08)
+
+- [ ] **The unit suite is at 56.5s against DESIGN.md §3's 60s budget.** It will
+      breach on the next module. Roughly 25s of it is four out-of-process tests
+      that each pay a fresh `import torch` (+ `deepxde` in one):
+      `test_the_pytorch_backend_is_selected_without_help_from_the_environment`
+      (10.1s), `test_resume_is_bit_exact` (7.7s),
+      `test_derive_seed_ignores_python_hash_randomisation` (6.0s),
+      `test_hash_is_stable_across_processes` (3.9s). Every one of them is
+      out-of-process for a real reason — ambient backend, hard kill, hash
+      randomisation, cross-process stability — so none should simply be
+      deleted. Decide between raising the budget, a `slow` marker that CI runs
+      and the pre-commit loop skips, or sharing one subprocess across the
+      seeding/hashing checks. Do it before step 3 adds Kaggle-runner tests.
+
+---
+
 ## utils/seeding (reviewed 2026-07-31)
 
 - [ ] **`restore_rng_state` CUDA error paths are uncovered** (`seeding.py:148`,
