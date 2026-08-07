@@ -120,6 +120,10 @@ class ResidualSpec(Spec):
 
     kind: str
     points: str = "interior"
+    #: The network this term differentiates. A coupled-system residual reads any
+    #: further networks it needs from ``state.nets`` directly — naming them all
+    #: here would put the coupling structure in two places at once.
+    net: str = "u"
     options: dict[str, Scalar] = Field(default_factory=dict)
 
 
@@ -290,6 +294,15 @@ class RunConfig(Spec):
             raise ValueError(
                 f"residuals reference point groups that sampling.points does not "
                 f"declare: {missing}; declared groups are {sorted(known_points)}"
+            )
+
+        undefined = sorted(
+            {spec.net for spec in self.residuals.values()} - set(self.nets)
+        )
+        if undefined:
+            raise ValueError(
+                f"residuals reference networks that nets does not declare: "
+                f"{undefined}; declared networks are {sorted(self.nets)}"
             )
 
         unknown = sorted(set(self.weighting.coefficients) - set(self.residuals))
