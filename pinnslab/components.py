@@ -61,32 +61,46 @@ class Registry(Generic[T]):
         return f"Registry({self.kind!r}, {sorted(self._items)})"
 
 
+#: Activations are their own registry rather than a dict inside ``models/``
+#: because activation search is one of the four research directions of
+#: DESIGN.md §6, and that layer needs to index into a fixed, enumerable set.
+ACTIVATIONS: Registry[Callable[..., Any]] = Registry("activation")
 MODELS: Registry[Callable[..., Any]] = Registry("model")
 OPTIMIZERS: Registry[Callable[..., Any]] = Registry("optimizer")
 PROBLEMS: Registry[Callable[..., Any]] = Registry("problem")
 RESIDUALS: Registry[Callable[..., Any]] = Registry("residual")
 SAMPLERS: Registry[Callable[..., Any]] = Registry("sampler")
+#: Output transforms — hard-constrained BCs/ICs (DESIGN.md §4 conformance item
+#: 5). Deliberately empty: a hard constraint is problem-specific, so it is born
+#: in a paper repo and only promoted here if a second paper needs the same one.
+TRANSFORMS: Registry[Callable[..., Any]] = Registry("output transform")
 WEIGHTINGS: Registry[Callable[..., Any]] = Registry("weighting")
 
+register_activation = ACTIVATIONS.register
 register_model = MODELS.register
 register_optimizer = OPTIMIZERS.register
 register_problem = PROBLEMS.register
 register_residual = RESIDUALS.register
 register_sampler = SAMPLERS.register
+register_transform = TRANSFORMS.register
 register_weighting = WEIGHTINGS.register
 
 __all__ = [
+    "ACTIVATIONS",
     "MODELS",
     "OPTIMIZERS",
     "PROBLEMS",
     "RESIDUALS",
     "SAMPLERS",
+    "TRANSFORMS",
     "WEIGHTINGS",
     "Registry",
+    "register_activation",
     "register_model",
     "register_optimizer",
     "register_problem",
     "register_residual",
     "register_sampler",
+    "register_transform",
     "register_weighting",
 ]
