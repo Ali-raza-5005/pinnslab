@@ -393,7 +393,47 @@ Activation search vmaps fine (index into a fixed set).
      just having more points in high-residual regions? A reviewer will ask.
 - **Figures are never hand-made.** Every figure produced by a script in
   `phases/p3_analysis/figures/` reading from `results/`. Zero manual edits.
-  A single `pinnslab.viz.style` module keeps all papers consistent.
+  A single `pinnslab.viz.style` module keeps all papers consistent, and
+  `scripts/make_figures.py` is the worked example a paper's own script copies.
+
+### Figure conventions (built 2026-08-08, `viz/`)
+
+The house style exists so these are decided once, not per figure:
+
+- **The primitive is a band, not a line.** `viz/convergence.py` plots the
+  median across seeds with the IQR shaded and the seed count in the legend. A
+  single-seed convergence plot is a plot of which seed the author picked — the
+  Burgers bring-up produced 0.030 to 0.435 across seeds of one *correct*
+  config.
+- **Diverged runs are excluded from the band and counted in the failure
+  annotation.** Both come from the same population, so the legend cannot say
+  `n=5` while the note says one of five failed. `include_diverged=True` for the
+  figure whose subject *is* divergence.
+- **Both x-axes, always.** `step` compares at equal iterations, `wall_time` at
+  equal compute. A method that wins per-step and loses per-second has not won.
+- **No LaTeX at render time.** `text.usetex` is off; mathtext with the `cm`
+  font set gives Computer Modern without a figure that dies in CI or on Kaggle.
+  Opt in per figure if a submission needs real macros.
+- **Palette is measured, not chosen.** Okabe-Ito, reordered so the worst
+  *adjacent* pair is ΔE 9.6 (OKLab ×100, Machado et al. 2009 CVD model) on
+  paper white. SciencePlots' default cycle was rejected on measurement: its
+  orange `#FF9500` and green `#00B945` land ΔE 2.8 apart under protanopia —
+  indistinguishable, and they are the first two colors a "ours vs baseline"
+  plot reaches for. Paul Tol's `bright` fails the lightness and chroma checks.
+  Colors are assigned in fixed order and **never cycled**; a 7th series is an
+  error, not a repeated hue.
+- **Color is never the only channel.** Every slot carries a linestyle and a
+  marker, for B&W print (IEEE requires it) and because three of the six sit
+  below 3:1 contrast on white.
+- **Fields**: perceptually uniform only — `viridis` for magnitude, `RdBu_r`
+  for signed fields and *always* through `style.symmetric_norm`, which centres
+  the neutral midpoint on zero. Matplotlib's default norm centres it on the
+  data's midpoint, drawing a sign change the solution does not have. No
+  rainbow: `jet` distorts by up to ~8% and is unreadable in grayscale.
+- **Tables are generated too** (`viz/tables.py`), booktabs, median [IQR], seed
+  count, and a failure column that appears only when something failed. One
+  notation per column — `9.34e-4` above `0.00111` is the same quantity written
+  two ways, in the cell a reader compares.
 - **`results/` is append-only.** Never overwrite. Aggregation reads raw, writes
   derived files to `analysis/`.
 
@@ -410,8 +450,10 @@ Activation search vmaps fine (index into a fixed set).
    claim/run/checkpoint/push/mark-done. Prove it survives a killed session.~~
    **Done 2026-08-08** — `training/queue.py` + `notebooks/kaggle_runner.py`.
    "Mark done" turned out to be unnecessary: status is derived (see §7).
-4. `viz/style.py` + one figure script reading results → publication-ready
-   convergence plot. Full loop config→figure, zero manual steps.
+4. ~~`viz/style.py` + one figure script reading results → publication-ready
+   convergence plot. Full loop config→figure, zero manual steps.~~
+   **Done 2026-08-08** — `viz/{style,aggregate,convergence,tables}.py` +
+   `scripts/make_figures.py`. Conventions and the measured palette in §8.
 5. `search/` layer: SearchSpec + vmap population evaluator + outer-loop
    checkpoint + cache + multi-fidelity. THEN start P0 on paper 1 (sampling).
 

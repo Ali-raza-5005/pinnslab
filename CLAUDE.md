@@ -58,20 +58,22 @@ median+IQR, explicit failure rate · equal tuning budget across methods.
   paying a fresh `import torch`) and `golden`.
 
 ## Current status
-Bootstrap phase. Build order in DESIGN.md §9. **Steps 1, 2 and 3 are done**:
-`utils/`, `registry/`, `training/` (checkpoint, trainer, build, queue),
-`components.py`, `geometry/adapters.py`, `models/mlp.py`, `physics/diffops.py`,
-`eval/metrics.py`, `benchmarks/burgers.py`, the Burgers golden test, and
-`notebooks/kaggle_runner.py`. 279 tests — unit ~47s, +~28s slow, golden ~87s.
+Bootstrap phase. Build order in DESIGN.md §9. **Steps 1-4 are done**: `utils/`,
+`registry/`, `training/` (checkpoint, trainer, build, queue), `components.py`,
+`geometry/adapters.py`, `models/mlp.py`, `physics/diffops.py`,
+`eval/metrics.py`, `benchmarks/burgers.py`, the Burgers golden test,
+`notebooks/kaggle_runner.py`, `viz/{style,aggregate,convergence,tables}.py` and
+`scripts/make_figures.py`. 333 tests.
 
 The queue derives cell status from the results directory instead of writing a
-status column, and partitions workers statically; both decisions and their
-reasons are in DESIGN.md §7. A killed sweep is proven bit-identical to an
-uninterrupted one.
+status column, and partitions workers statically; a killed sweep is proven
+bit-identical to an uninterrupted one (DESIGN.md §7). Figure conventions and
+the *measured* palette decision are in DESIGN.md §8 — read that before touching
+`viz/`; the palette is not a matter of taste and SciencePlots' default cycle
+was rejected on a colorblind-safety measurement.
 
-**Next: step 4** — `viz/style.py` + one figure script reading `results/` into a
-publication-ready convergence plot, config→figure with zero manual steps. Then
-step 5 (`search/`).
+**Next: step 5** — `search/`: SearchSpec + vmap population evaluator +
+outer-loop checkpoint + candidate cache + multi-fidelity. Then P0 on paper 1.
 
 Before the first real sweep, in TESTS_TODO.md: checkpoint retention, and the
 `resample_every`-plus-resume gap (collocation points are not checkpointed, so an

@@ -22,7 +22,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+# dev pulls analysis because `viz/` needs matplotlib and its tests are part of
+# the unit suite: a dev install that cannot collect tests/unit/test_viz.py is
+# not a dev install.
+dev = ["pytest>=8.0", "ruff>=0.6", "pinnslab[analysis]"]
 # Aggregation/figures are DESIGN.md §9 steps 4-5, kept out of the core install so
 # no pinnslab module may import them. That is the point of the split; it is NOT
 # an install-size saving, and this comment used to claim it was. Measured

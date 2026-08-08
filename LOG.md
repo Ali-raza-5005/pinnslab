@@ -5,6 +5,54 @@ phase, days left in timebox. Newest first.
 
 ---
 
+## 2026-08-08 — bootstrap step 4: figures and tables
+
+- **Ran**: DESIGN.md §9 step 4 — `viz/style.py` (house rcParams, palette,
+  colormaps, save), `viz/aggregate.py` (`results/` → median/IQR/failure rate
+  with the §5 hardware check), `viz/convergence.py`, `viz/tables.py` (booktabs),
+  and `scripts/make_figures.py`, the worked config→figure loop with no manual
+  steps. 278 → 333 tests; unit ~17s, full suite ~89s. Also researched what the
+  PINN literature actually does and what the plotting ecosystem offers before
+  writing any of it.
+- **Decided (measured, not chosen)**: **SciencePlots is not adopted.** Two
+  independent reasons. Its `science` style sets `text.usetex: True`, so every
+  figure depends on a working TeX install — a figure that renders here and dies
+  in CI is not reproducible. And its default color cycle *fails* a
+  colorblind-safety check: orange `#FF9500` against green `#00B945` is ΔE 2.8
+  under protanopia (OKLab ×100, Machado et al. 2009), i.e. indistinguishable —
+  on the two colors a "ours vs baseline" plot reaches for first. Paul Tol's
+  `bright` fails on lightness band and chroma floor. Settled on Okabe-Ito
+  **reordered** so the worst adjacent pair is ΔE 9.6 across six slots on paper
+  white, with a linestyle and marker per slot because IEEE wants B&W-readable
+  figures and three of the six sit below 3:1 contrast. The palette is pinned by
+  a test; it is not a matter of taste.
+- **Learned (the expensive one, and it did not come from a test)**: the first
+  three defects all survived a green 44-test suite and were caught by
+  *rendering the figure and looking at it*. (1) A diverged seed's trace was
+  inside the median band, so the legend read `n=5` while the figure's own
+  failure note read "1/5 failed" — two numbers from the same five runs
+  disagreeing. (2) The log x-axis silently dropped step 0, which is exactly the
+  untrained baseline `MetricSchedule.record_first` exists to capture; matplotlib
+  discards non-positive x without a word. (3) The table printed
+  `9.34 \times 10^{-4}` directly above `0.00111` — one quantity, two notations,
+  in the cell a reader compares — and `\caption{... rel_l2 ...}` would not have
+  compiled. All three now have tests, written after the render, not before.
+  **Add "render it and look at it" to the definition of done for any figure
+  code**; the assertions I would have written unprompted all passed.
+- **Also decided**: `viz/` is deliberately not re-exported from a package
+  `__init__` (matplotlib import cost, same rule as `training/build` and
+  `training/queue`); `dev` now pulls `analysis`, because a dev install that
+  cannot collect `test_viz.py` is not a dev install; and `registry/run.py`
+  grew a plain `read_trace(directory)` so aggregation can read a finished run
+  without constructing a `Run` and re-collecting provenance.
+- **Next**: step 5 — `search/`: SearchSpec, the vmap population evaluator,
+  outer-loop checkpointing, the candidate cache, multi-fidelity. Then P0 on
+  paper 1. Still open before the first real sweep: checkpoint retention, and
+  actually fixing the `resample_every` gap rather than guarding it.
+- **Phase**: bootstrap. No paper timebox running yet.
+
+---
+
 ## 2026-08-08 — bootstrap step 3: the Kaggle runner
 
 - **Ran**: DESIGN.md §9 step 3 — `training/queue.py` and

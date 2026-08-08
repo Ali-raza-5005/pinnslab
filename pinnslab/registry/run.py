@@ -253,13 +253,8 @@ class Run:
         return row
 
     def read_trace(self) -> list[TracePoint]:
-        """The trace so far, tolerating the truncated final line a SIGKILL leaves.
-
-        Goes through :func:`_read_jsonl` for the same reason :func:`load_runs`
-        does: this is most often called on a resumed run, i.e. on precisely the
-        file some earlier session was killed in the middle of writing.
-        """
-        return [TracePoint(**record) for record in _read_jsonl(self.path / TRACE_JSONL)]
+        """This run's trace so far. See :func:`read_trace`."""
+        return read_trace(self.path)
 
     def _append_session(self, event: str, current: Provenance | None = None) -> None:
         prov = current or self.provenance
@@ -267,6 +262,22 @@ class Run:
             self.path / SESSIONS_JSONL,
             {"event": event, "at": utc_now(), **prov.model_dump(mode="json")},
         )
+
+
+def read_trace(directory: str | Path) -> list[TracePoint]:
+    """The convergence trace in a run directory, as a plain function.
+
+    Separate from :meth:`Run.read_trace` because aggregation reads finished
+    runs off disk without owning them — constructing a ``Run`` to read a file
+    would mean re-validating a config and re-collecting provenance for nothing.
+
+    Goes through :func:`_read_jsonl` for the same reason :func:`load_runs`
+    does: a run that was resumed has a file some earlier session was killed in
+    the middle of writing.
+    """
+    return [
+        TracePoint(**record) for record in _read_jsonl(Path(directory) / TRACE_JSONL)
+    ]
 
 
 def load_runs(root: str | Path, *, include_unfinished: bool = False) -> list[ResultRow]:
@@ -414,4 +425,4 @@ def _append_jsonl(path: Path, payload: Any) -> None:
         os.fsync(fh.fileno())
 
 
-__all__ = ["Run", "load_runs", "make_run_id"]
+__all__ = ["Run", "load_runs", "make_run_id", "read_trace"]
