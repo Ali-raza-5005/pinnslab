@@ -5,6 +5,57 @@ phase, days left in timebox. Newest first.
 
 ---
 
+## 2026-08-08 — bootstrap step 3: the Kaggle runner
+
+- **Ran**: DESIGN.md §9 step 3 — `training/queue.py` and
+  `notebooks/kaggle_runner.py`, plus the suite-budget decision that was blocking
+  it. 244 → 278 tests. Split into two commands: `pytest -m "unit and not slow"`
+  for the commit loop (43s, was 56.5s) and `pytest` before a push or tag (205s:
+  +105s `slow`, +79s golden). Only the three *subprocess* tests got the `slow`
+  marker; `test_resume_is_bit_exact` was on the list but is in-process and is
+  the load-bearing test of the checkpoint layer, so it stays in the loop that
+  runs before every commit.
+- **Decided (a departure from §7, recorded there)**: **status is derived, never
+  written.** §7 specified a mutable status column that the notebook marked done.
+  Deriving it from the results directory is strictly better: the `run_id` is a
+  pure function of `(config_hash, seed)`, so the directory *is* the claim, rule
+  6 holds by construction, and — the deciding argument — a status column cannot
+  be written correctly by a process that may be killed at any instant. Written
+  before the work it strands rows in `claimed` forever; written after, it loses
+  every interrupted run. Combined with static worker partitioning (`index % n`),
+  claiming needs no lock, no lease and no heartbeat, because two workers never
+  consider the same cell.
+- **Learned**: a crash during **assembly** left no evidence at all. `run_cell`
+  creates the run directory, then builds; `Trainer.fit` logs its own crashes but
+  had not been reached yet, so an unregistered problem or an OOM allocating the
+  nets left a directory indistinguishable from one a session was killed in — and
+  a config that cannot be built would never reach the failure rate (§11) at all.
+  Found by a test that asserted `FAILED` and got `RESUMABLE`. Only the build is
+  wrapped: `fit` already records its own, and logging both would report one
+  failure as two.
+- **Also learned**: the killed-session proof pins more than resumability. The
+  killed sweep trains its cells as (0) then (1, 2) across two processes while
+  the reference trains (0, 1, 2) in one, so asserting the two are bit-identical
+  also pins that no global state leaks between cells — a seed set once, a
+  default dtype, a shared RNG stream would all show up here. The kill is a real
+  `os._exit`, not an exception: an exception unwinds and flushes, which is the
+  one thing a dying Kaggle session does not do.
+- **Decided**: `run_queue` **refuses** `resample_every` on a checkpointed run
+  rather than allowing the known-silent corruption (collocation points are not
+  checkpointed, so a resumed run continues on the initial cloud). The queue is
+  the machinery that makes runs interruptible, so it is where that would first
+  bite — on paper 1, whose subject is sampling. `allow_resampling=True` waives
+  it. Also: `queue` is deliberately not re-exported from `training/__init__`,
+  for the same reason `build` never was — both reach deepxde, and
+  `import pinnslab.training` must not.
+- **Next**: step 4 — `viz/style.py` + one figure script reading `results/` into a
+  publication-ready convergence plot, config→figure with zero manual steps.
+  Still open before the first real sweep: checkpoint retention, and actually
+  fixing (not just guarding) the `resample_every` gap.
+- **Phase**: bootstrap. No paper timebox running yet.
+
+---
+
 ## 2026-08-08 — bootstrap step 2: Burgers end-to-end
 
 - **Ran**: DESIGN.md §9 step 2 in full — config volatile axes (`problem`,

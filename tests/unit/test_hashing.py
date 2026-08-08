@@ -63,6 +63,7 @@ def test_nan_is_rejected_rather_than_silently_hashed():
         canonical_json({"lr": float("nan")})
 
 
+@pytest.mark.slow
 def test_hash_is_stable_across_processes():
     """`hash()` and `pickle` are not; this must be, or resumes break silently."""
     root = Path(__file__).resolve().parents[2]

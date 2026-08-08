@@ -65,6 +65,7 @@ def test_no_deepxde_object_escapes_the_adapter(domain):
 # -- the backend is ambient, and its default is wrong here --------------------
 
 
+@pytest.mark.slow
 def test_the_pytorch_backend_is_selected_without_help_from_the_environment():
     """A fresh interpreter with no DDE_BACKEND set must still land on pytorch.
 

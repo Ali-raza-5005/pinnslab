@@ -1,0 +1,82 @@
+# A real Burgers run, shrunk until it fits a unit test.
+#
+# Deliberately the real config -> problem -> residual -> trainer path rather
+# than a mock: the queue's job is to start, resume and finish *runs*, and a test
+# that stubbed the run out would pass on a queue that could not actually drive
+# one. Everything here is sized for speed, not accuracy — no assertion in the
+# queue tests looks at rel_l2.
+#
+# resample_every is unset on purpose: it is what _check_resampling refuses, and
+# a fixture that tripped the guard could not be used for anything else.
+name: queue-fixture-burgers-tiny
+seed: 0
+dtype: float64
+device: cpu
+deterministic: true
+
+problem:
+  name: burgers1d
+  options:
+    nu: 0.3183098861837907  # 1.0 / pi — very smooth, and never evaluated
+
+nets:
+  u:
+    arch: mlp
+    inputs: 2
+    outputs: 1
+    width: 8
+    depth: 2
+    activation: tanh
+    init: glorot_normal
+
+residuals:
+  pde:
+    kind: burgers1d.pde
+    points: [interior, initial, boundary]
+  ic:
+    kind: burgers1d.ic
+    points: initial
+  bc:
+    kind: burgers1d.bc
+    points: boundary
+
+sampling:
+  points:
+    interior:
+      region: interior
+      n: 64
+    initial:
+      region: initial
+      n: 16
+    boundary:
+      region: boundary
+      n: 8
+
+weighting:
+  kind: mean
+
+stages:
+  - name: adam
+    steps: 60
+    optimizers:
+      - name: adam
+        lr: 0.001
+
+eval:
+  best_metric: loss
+  best_mode: min
+
+logging:
+  trace:
+    every: 20
+    record_first: true
+    record_last: true
+
+# every_steps well below the stage length, so a session killed partway through
+# has a real checkpoint behind it — that is the property the killed-session
+# test is about.
+checkpoint:
+  every_seconds: null
+  every_steps: 10
+  save_best: true
+  save_last: true

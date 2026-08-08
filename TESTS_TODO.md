@@ -9,20 +9,29 @@ immediately instead of being queued.
 
 ---
 
-## suite budget (2026-08-08)
+## training/queue (built 2026-08-08)
 
-- [ ] **The unit suite is at 56.5s against DESIGN.md §3's 60s budget.** It will
-      breach on the next module. Roughly 25s of it is four out-of-process tests
-      that each pay a fresh `import torch` (+ `deepxde` in one):
-      `test_the_pytorch_backend_is_selected_without_help_from_the_environment`
-      (10.1s), `test_resume_is_bit_exact` (7.7s),
-      `test_derive_seed_ignores_python_hash_randomisation` (6.0s),
-      `test_hash_is_stable_across_processes` (3.9s). Every one of them is
-      out-of-process for a real reason — ambient backend, hard kill, hash
-      randomisation, cross-process stability — so none should simply be
-      deleted. Decide between raising the budget, a `slow` marker that CI runs
-      and the pre-commit loop skips, or sharing one subprocess across the
-      seeding/hashing checks. Do it before step 3 adds Kaggle-runner tests.
+One source bug was found and fixed while building this rather than queued: a
+crash during *assembly* — after the run directory exists, before `Trainer.fit`
+can record anything — left no evidence, so a config that could not be built was
+indistinguishable from a session that was killed and never reached the failure
+rate. `run_cell` now logs it. What is left:
+
+- [ ] **`select`/`statuses` load and validate every config on every call.** Fine
+      for a hand-written sweep of tens of cells; the `search/` layer (§6) will
+      generate matrices of 1e4–1e5. At that size the notebook pays a full
+      YAML-parse-and-validate pass per selection, and `run_queue` pays a second
+      one for the up-front resampling check. Cache by `(path, mtime)` when it
+      actually hurts — but measure first, since the alternative is a cache that
+      can serve a stale config, which is worse than slow.
+
+- [ ] **The deadline heuristic is untested against real timings.** `run_queue`
+      declines a new cell when the time left is under the longest cell seen
+      *this session*, which is only a good estimate when cells are similar. A
+      matrix mixing a 30s cell with a 3h cell will either overrun (short cells
+      first) or leave an hour idle (long cell first). Only the degenerate
+      `deadline_seconds=0.0` path is covered. Decide whether per-config
+      estimates are worth it before the first sweep with heterogeneous cells.
 
 ---
 

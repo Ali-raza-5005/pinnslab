@@ -1,0 +1,58 @@
+# burgers_tiny with resampling turned on. Exists only to trip the guard in
+# pinnslab.training.queue._check_resampling — collocation points are not
+# checkpointed, so a resumed run of this config would silently continue on the
+# initial point cloud. Never trained by any test.
+name: queue-fixture-burgers-tiny-resampled
+seed: 0
+dtype: float64
+device: cpu
+deterministic: true
+
+problem:
+  name: burgers1d
+  options:
+    nu: 0.3183098861837907
+
+nets:
+  u:
+    arch: mlp
+    inputs: 2
+    outputs: 1
+    width: 8
+    depth: 2
+
+residuals:
+  pde:
+    kind: burgers1d.pde
+    points: [interior, initial, boundary]
+  ic:
+    kind: burgers1d.ic
+    points: initial
+  bc:
+    kind: burgers1d.bc
+    points: boundary
+
+sampling:
+  points:
+    interior:
+      region: interior
+      n: 64
+    initial:
+      region: initial
+      n: 16
+    boundary:
+      region: boundary
+      n: 8
+
+stages:
+  - name: adam
+    steps: 60
+    resample_every: 20
+    optimizers:
+      - name: adam
+        lr: 0.001
+
+checkpoint:
+  every_seconds: null
+  every_steps: 10
+  save_last: true

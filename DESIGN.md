@@ -96,9 +96,27 @@ pinnslab/
 │   ├── registry/     # Run object, config hashing, results schema, manifest
 │   └── utils/        # seeding, determinism, logging, device management
 └── tests/
-    ├── unit/         # fast, CPU-only, <60s total
+    ├── unit/         # fast, CPU-only, <60s total excluding `slow`
     └── golden/       # regression: "Burgers @ config X reaches rel-L2 <= 1.2e-3 in 20k steps"
 ```
+
+### The two test commands (decided 2026-08-08)
+
+- **Pre-commit loop**: `pytest -m "unit and not slow"` — the <60s budget applies
+  to *this* number, because this is the command whose latency decides whether
+  tests get run at all.
+- **Pre-push / pre-tag**: `pytest` — everything, `slow` and `golden` included.
+
+`slow` marks tests that spawn a subprocess and therefore pay a fresh
+`import torch` (~4-10s each, and one also pays `import deepxde`). Each is
+out-of-process for a real reason that cannot be faked in-process — the DeepXDE
+backend is chosen once at first import, `derive_seed` must survive
+`PYTHONHASHSEED` varying between processes, and a config hash must be identical
+in the Kaggle session that resumes a run as in the one that started it — so none
+should be deleted or rewritten in-process. They are simply not worth 16s on
+every commit. `test_resume_is_bit_exact` is deliberately **not** marked: it is
+slow (~8s) because it genuinely trains twice, but it is the load-bearing test of
+the checkpoint layer and belongs in the loop that runs before every commit.
 
 ---
 
@@ -308,10 +326,46 @@ Activation search vmaps fine (index into a fixed set).
   step) every N minutes to `/kaggle/working`; every run starts by looking for a
   checkpoint in a mounted Dataset and resuming. Size runs to finish under the
   session wall clock, or make them resumable across sessions by design.
-- **Run queue, not manual notebooks**: `run_matrix.csv` lists every
-  (pde, method, seed, hparams) cell with a status column. Notebook claims
-  pending rows, runs, writes results, marks done. "Did we run config X?"
-  answerable in 5 seconds.
+- **Run queue, not manual notebooks** (`training/queue.py`, built 2026-08-08):
+  `run_matrix.csv` lists every cell; the notebook works through them.
+
+  **Status is derived, never written.** The matrix is an immutable declarative
+  input — a list of `(config, seed)` pairs — and a cell's `run_id` is a pure
+  function of that pair (`config_hash[:12] + "_s" + seed`). So the run directory
+  *is* the claim: "claimed" = it exists, "done" = it has `result.json`. This
+  file originally specified a mutable status column that the notebook marked
+  done; deriving it is strictly better here, and the reasons generalise:
+  1. **Rule 6 holds by construction** — no mutable experimental bookkeeping to
+     overwrite, and no way for the queue's idea of what ran to disagree with
+     what is on disk.
+  2. **A killed session leaves no lie** — a status written *before* the work
+     strands rows in `claimed` forever; written *after*, it loses every
+     interrupted run. The directory is correct either way, because the run
+     itself created it.
+  3. **Two GPUs never contend** — see below.
+
+  **Claiming is lock-free because workers partition statically.** Worker *k* of
+  *n* takes matrix rows where `index % n == k`. No two workers ever consider one
+  cell, so a stale claim cannot exist and no lease or heartbeat is needed to
+  detect one. Within a worker's slice, unfinished cells are claimed before
+  untouched ones: only started work has compute at risk.
+
+  **Only `seed` may live in the matrix**, never a hyperparameter — every other
+  axis gets its own YAML file. Seed is already excluded from the config hash
+  (§4), so it is the one field that can sit outside a config without breaking
+  the no-literals rule, and five seeds of one condition still share a hash for
+  the §8 groupby.
+
+  Proven against a real `os._exit` mid-cell, not a raised exception:
+  `tests/unit/test_queue_survives_a_killed_session.py` asserts the killed sweep
+  is **bit-identical** to an uninterrupted one. A queue that silently restarted
+  the interrupted cell would pass every weaker test.
+
+  **Known gap, guarded rather than fixed**: collocation points are not
+  checkpointed, so a run with `resample_every` set resumes on the initial point
+  cloud. `run_queue` refuses that combination outright (`allow_resampling=True`
+  to waive) until the sampler-state question — the same decision as §6's
+  outer-loop checkpointing — is settled.
 
 ---
 
@@ -352,8 +406,10 @@ Activation search vmaps fine (index into a fixed set).
    (bare Adam→L-BFGS loop). Nothing else.
 2. One benchmark end-to-end: 1D Burgers + vanilla MLP. Golden test asserting
    target rel-L2.
-3. Kaggle runner: <=20-line notebook, install-from-tag, read run_matrix.csv,
-   claim/run/checkpoint/push/mark-done. Prove it survives a killed session.
+3. ~~Kaggle runner: <=20-line notebook, install-from-tag, read run_matrix.csv,
+   claim/run/checkpoint/push/mark-done. Prove it survives a killed session.~~
+   **Done 2026-08-08** — `training/queue.py` + `notebooks/kaggle_runner.py`.
+   "Mark done" turned out to be unnecessary: status is derived (see §7).
 4. `viz/style.py` + one figure script reading results → publication-ready
    convergence plot. Full loop config→figure, zero manual steps.
 5. `search/` layer: SearchSpec + vmap population evaluator + outer-loop

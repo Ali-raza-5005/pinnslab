@@ -134,6 +134,7 @@ def test_derive_seed_matches_its_pinned_values():
         assert derive_seed(*args) == expected, args
 
 
+@pytest.mark.slow
 def test_derive_seed_ignores_python_hash_randomisation():
     """The real property: identical across processes with different hash seeds.
 

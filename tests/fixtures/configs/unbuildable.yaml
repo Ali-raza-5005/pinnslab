@@ -1,0 +1,37 @@
+# Loads and validates cleanly, then fails when assemble() looks the problem up.
+# This is the shape of the failure the queue must survive: a config is only
+# fully checkable by trying to build it, so some cells can only fail at run
+# time, and one of them must not take the rest of the sweep down.
+name: queue-fixture-unbuildable
+seed: 0
+dtype: float64
+device: cpu
+
+problem:
+  name: no-such-benchmark
+
+nets:
+  u:
+    arch: mlp
+    inputs: 2
+    outputs: 1
+    width: 8
+    depth: 2
+
+residuals:
+  pde:
+    kind: burgers1d.pde
+    points: interior
+
+sampling:
+  points:
+    interior:
+      region: interior
+      n: 16
+
+stages:
+  - name: adam
+    steps: 10
+    optimizers:
+      - name: adam
+        lr: 0.001

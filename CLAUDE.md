@@ -51,18 +51,30 @@ Compute parity (incl. search cost) · random-search baseline at matched budget �
 CMA-ES/DE serious-optimizer baseline · mechanism ablation · >=5 seeds,
 median+IQR, explicit failure rate · equal tuning budget across methods.
 
+## Tests — two commands
+- **Before every commit**: `pytest -m "unit and not slow"`. The DESIGN.md §3 60s
+  budget applies to *this* number.
+- **Before every push/tag**: `pytest` — adds `slow` (subprocess tests, each
+  paying a fresh `import torch`) and `golden`.
+
 ## Current status
-Bootstrap phase. Build order in DESIGN.md §9. **Steps 1 and 2 are done**:
-`utils/`, `registry/`, `training/` (checkpoint, trainer, build), `components.py`,
-`geometry/adapters.py`, `models/mlp.py`, `physics/diffops.py`, `eval/metrics.py`,
-`benchmarks/burgers.py`, and the Burgers golden test. 244 tests — unit ~53s,
-golden ~87s.
+Bootstrap phase. Build order in DESIGN.md §9. **Steps 1, 2 and 3 are done**:
+`utils/`, `registry/`, `training/` (checkpoint, trainer, build, queue),
+`components.py`, `geometry/adapters.py`, `models/mlp.py`, `physics/diffops.py`,
+`eval/metrics.py`, `benchmarks/burgers.py`, the Burgers golden test, and
+`notebooks/kaggle_runner.py`. 279 tests — unit ~47s, +~28s slow, golden ~87s.
 
-**Next: step 3** — the Kaggle runner (≤20-line notebook, install-from-tag,
-`run_matrix.csv` claim/run/checkpoint/push/mark-done), proven against a killed
-session. Then step 4 (`viz/style.py` + figure script), then step 5 (`search/`).
+The queue derives cell status from the results directory instead of writing a
+status column, and partitions workers statically; both decisions and their
+reasons are in DESIGN.md §7. A killed sweep is proven bit-identical to an
+uninterrupted one.
 
-Two things to settle before the first real sweep, both in TESTS_TODO.md:
-checkpoint retention, and the `resample_every`-plus-resume gap (collocation
-points are not checkpointed, so an interrupted resampling run resumes on the
-wrong cloud — it lands directly on paper 1).
+**Next: step 4** — `viz/style.py` + one figure script reading `results/` into a
+publication-ready convergence plot, config→figure with zero manual steps. Then
+step 5 (`search/`).
+
+Before the first real sweep, in TESTS_TODO.md: checkpoint retention, and the
+`resample_every`-plus-resume gap (collocation points are not checkpointed, so an
+interrupted resampling run resumes on the wrong cloud). The second is now
+*guarded* — `run_queue` refuses `resample_every` on a checkpointed run — but not
+fixed, and it lands directly on paper 1.

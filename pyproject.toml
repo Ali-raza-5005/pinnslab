@@ -23,8 +23,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.6"]
-# Aggregation/figures are DESIGN.md §9 steps 4-5; kept out of the core install
-# so Kaggle sessions do not pull pandas/pyarrow/matplotlib they never use.
+# Aggregation/figures are DESIGN.md §9 steps 4-5, kept out of the core install so
+# no pinnslab module may import them. That is the point of the split; it is NOT
+# an install-size saving, and this comment used to claim it was. Measured
+# 2026-08-08: importing geometry/adapters already pulls pandas, pyarrow and
+# matplotlib into the process, because deepxde depends on them. Declaring them
+# here anyway keeps the dependency honest — a version pinnslab's own analysis
+# code needs must not be inherited by accident from deepxde's requirements.
 analysis = ["pandas>=2.2", "pyarrow>=16.0", "matplotlib>=3.8"]
 
 [tool.hatch.version]
@@ -37,8 +42,9 @@ packages = ["pinnslab"]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
-    "unit: fast CPU-only tests (<60s total)",
+    "unit: fast CPU-only tests (<60s total, excluding slow)",
     "golden: regression tests against frozen benchmark targets (<2 min, CPU)",
+    "slow: out-of-process tests that each pay a fresh `import torch`",
 ]
 filterwarnings = ["error::DeprecationWarning:pinnslab.*"]
 
