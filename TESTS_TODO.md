@@ -9,6 +9,36 @@ immediately instead of being queued.
 
 ---
 
+## search/ (built 2026-08-08)
+
+One source bug was found and fixed while building rather than queued:
+`BatchedEvaluator` reseeded the RNG once per population, so a candidate's
+network initialisation — and therefore its fitness — depended on its position
+in the batch, which silently breaks the `(config_hash, steps)` cache key. What
+is left:
+
+- [ ] **The batched speedup is unmeasured on a GPU**, which is the only
+      hardware where DESIGN.md §6's "20-50x" claim could hold. CPU gives
+      1.7-3.4x, peaking at P=16. Measure on a T4 and a P100 before any paper
+      quotes a search-cost number, and record P alongside it — the curve is not
+      monotone, so "pop_size 50" may be slower per candidate than 16.
+
+- [ ] **`Ensemble` assumes one activation for every layer and every member.**
+      It takes a single `activation` callable, so activation search — one of
+      DESIGN.md §6's four directions — cannot yet vary that axis across the
+      population even though it is exactly the kind that *should* batch (index
+      into a fixed set). Needs a per-member activation index and a gather;
+      decide when a paper reaches for it.
+
+- [ ] **`BatchedEvaluator` scores the training objective, never a held-out
+      metric.** That is documented and deliberate (no reference solution on
+      that path), but it means a search optimising `rel_l2` silently falls back
+      to the slow path. Worth a test that the two paths' *rankings* agree on a
+      real problem, since agreeing on the objective does not guarantee agreeing
+      on which candidate generalises.
+
+---
+
 ## training/queue (built 2026-08-08)
 
 One source bug was found and fixed while building this rather than queued: a

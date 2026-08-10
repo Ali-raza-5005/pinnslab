@@ -280,20 +280,70 @@ Nested optimization: pop 30 × 100 gens = 3,000 inner trainings PER cell; ×seed
 PINNs are tiny MLPs (pop 50 × 5k params = 250k total, nothing). Batch the whole
 population as one vmapped model → ~20–50× throughput on a T4.
 
-```python
-from torch.func import functional_call, stack_module_state, vmap
-params, buffers = stack_module_state(population)          # [P, ...] pop dim
-def fitness(p, b, pts):
-    return residual_loss(functional_call(base, (p, b), (pts,)))
-losses = vmap(fitness)(params, buffers, collocation_pts)  # all P at once
-```
 **This is structurally impossible through DeepXDE** (stateful OO Model). It's a
 core reason we build from scratch.
 
-Scope caveat: vmap needs shared tensor shapes → clean for sampling, loss
-weights, weight-space optimization. Architecture search over varying depth/width
-doesn't vectorise directly → group candidates by shape, vmap within groups.
-Activation search vmaps fine (index into a fixed set).
+### CORRECTION (measured 2026-08-08): it is a batched graph, not `vmap`
+
+This section originally prescribed `torch.func.vmap` over `stack_module_state` +
+`functional_call`. **That does not compose with a PINN residual.** A residual
+differentiates the network with respect to its *inputs*, so it must flag the
+collocation points with `requires_grad_()`, and `vmap` refuses:
+
+```
+RuntimeError: You are attempting to call Tensor.requires_grad_() (or perhaps
+using torch.autograd.functional.* APIs) inside of a function being transformed
+by a function transform
+```
+
+Making `vmap` work would mean rewriting every residual against
+`torch.func.jacrev`/`hessian` — a second way to spell every PDE, i.e. exactly
+the per-paper monkey-patching §1 rejects.
+
+**What we do instead keeps the goal and drops the mechanism: put the population
+on a leading batch dimension and build one graph.** `search/population.py`'s
+`Ensemble` evaluates P identical-shaped MLPs as batched matmuls, so inputs are
+`(P, N, d)`, outputs `(P, N, m)`, and plain `torch.autograd.grad` works
+unchanged including second derivatives. `physics/diffops.py` indexes with `...`
+rather than a leading colon, so **a residual written once serves both a single
+run and a whole population** and never learns the population exists.
+
+Three measured facts make it correct rather than merely convenient:
+
+1. **Independence.** `grad_outputs=ones` sums before differentiating, and output
+   element `(p, n)` depends only on candidate `p`'s parameters and point
+   `(p, n)`, so every cross term is identically zero. Batched and separate
+   evaluation of a Burgers residual agree to **0.0e+00**.
+2. **One Adam is P Adams.** Adam is elementwise with per-element state, so a
+   single optimizer over stacked `(P, ...)` parameters *is* P independent Adams
+   — provided what reaches `backward` is the **sum** over candidates. Measured
+   parameter drift against P separate trainings after 25 steps: **1.1e-16**.
+3. **Speed — and the honest number.** On this CPU with a real Burgers residual
+   (width 20, depth 3, N=512): 1.7× at P=4, 2.8× at P=8, **3.4× at P=16**,
+   falling to ~2.2× by P=50. The "20–50× on a T4" above is a *GPU* claim about
+   kernel-launch overhead dominating for tiny nets and is **untested — there is
+   no GPU here.** Do not put it in a paper until it is measured on the hardware
+   in question: compute parity is a reviewer defence and an unverified speedup
+   is a hole in it.
+
+**What breaks independence**: anything reducing across the population. Global
+gradient-norm clipping is the trap — one norm over all P candidates means a
+single diverging candidate damps everyone else's step. `train_population`
+refuses it rather than producing a quietly coupled search.
+
+Scope caveat (unchanged, and it applies to the batched graph identically):
+shared tensor shapes are required → clean for sampling, loss weights,
+weight-space optimization. Architecture search over varying depth/width doesn't
+batch directly → group candidates by shape, batch within groups. Activation
+search batches fine (index into a fixed set).
+
+The batched path also fixes the **point count** across the population, which
+looks like a limit on the flagship "how many collocation points?" axis but is
+not: §8 already requires an identical collocation count across compared methods
+for the comparison to be fair, so a sampling search at fixed budget is the
+correct default and *where* the points go is the question. Varying the count
+runs through `SequentialEvaluator`, which is also the oracle the batched path is
+tested against, and the only path that can score against a reference solution.
 
 ### Three things not to skip
 1. **Outer-loop checkpointing**: population, generation counter, archive, AND
@@ -454,8 +504,11 @@ The house style exists so these are decided once, not per figure:
    convergence plot. Full loop config→figure, zero manual steps.~~
    **Done 2026-08-08** — `viz/{style,aggregate,convergence,tables}.py` +
    `scripts/make_figures.py`. Conventions and the measured palette in §8.
-5. `search/` layer: SearchSpec + vmap population evaluator + outer-loop
-   checkpoint + cache + multi-fidelity. THEN start P0 on paper 1 (sampling).
+5. ~~`search/` layer: SearchSpec + vmap population evaluator + outer-loop
+   checkpoint + cache + multi-fidelity.~~ **Done 2026-08-08** —
+   `search/{space,spec,algorithms,population,evaluate,cache,state,loop}.py`.
+   The population evaluator is a batched graph, not `vmap`; see the correction
+   in §6. THEN start P0 on paper 1 (sampling).
 
 Config system: **YAML + pydantic (DECIDED — no Hydra).** YAML on disk → load to
 dict → validate into pydantic models → hash the validated object for provenance.

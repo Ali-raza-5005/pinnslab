@@ -44,7 +44,12 @@ def gradient(
     component: int = 0,
     create_graph: bool = True,
 ) -> torch.Tensor:
-    """``d outputs[:, component] / d inputs``, shaped ``(N, d)``.
+    """``d outputs[..., component] / d inputs``, shaped like ``inputs``.
+
+    Accepts ``(N, m)`` outputs against ``(N, d)`` inputs, and equally
+    ``(P, N, m)`` against ``(P, N, d)`` — the search layer's batched population
+    (DESIGN.md §6). Index derivatives with ``[..., i : i + 1]`` so a residual
+    written once works in both.
 
     ``create_graph=True`` is the default because a PINN residual is itself
     differentiated — once to build a second derivative, and again by the
@@ -56,10 +61,11 @@ def gradient(
     only on the matching row of ``inputs``, so the cross terms it would drop are
     identically zero, and one backward pass recovers all ``N`` gradients.
     """
-    if outputs.ndim != 2:
+    if outputs.ndim not in (2, 3):
         raise ValueError(
-            f"outputs must be (N, m), got {tuple(outputs.shape)}; a residual that "
-            "already reduced its outputs cannot be differentiated per point"
+            f"outputs must be (N, m) or (P, N, m), got {tuple(outputs.shape)}; a "
+            "residual that already reduced its outputs cannot be differentiated "
+            "per point"
         )
     if not inputs.requires_grad:
         raise ValueError(
@@ -68,7 +74,13 @@ def gradient(
             "pass — flagging them afterwards is too late, the graph is gone."
         )
 
-    selected = outputs[:, component : component + 1]
+    # Ellipsis, not a leading colon, so one residual serves both a single run
+    # ``(N, m)`` and a whole search population ``(P, N, m)``. The maths is
+    # unchanged: element ``(p, n)`` depends only on candidate p's parameters and
+    # point ``(p, n)``, so the cross terms the grad_outputs=ones trick drops are
+    # still identically zero (DESIGN.md §6, and measured in
+    # tests/unit/test_search_population.py).
+    selected = outputs[..., component : component + 1]
     (grad,) = torch.autograd.grad(
         selected,
         inputs,
@@ -95,7 +107,7 @@ def partial(
     grad = gradient(
         outputs, inputs, component=component, create_graph=create_graph
     )
-    return grad[:, wrt : wrt + 1]
+    return grad[..., wrt : wrt + 1]
 
 
 def second_partial(
@@ -120,7 +132,7 @@ def second_partial(
     """
     first = partial(outputs, inputs, wrt, component=component, create_graph=True)
     return gradient(first, inputs, component=0, create_graph=create_graph)[
-        :, wrt : wrt + 1
+        ..., wrt : wrt + 1
     ]
 
 
@@ -139,12 +151,12 @@ def laplacian(
     time is not part of a Laplacian.
     """
     first = gradient(outputs, inputs, component=component, create_graph=True)
-    axes = tuple(range(inputs.shape[1])) if dims is None else dims
+    axes = tuple(range(inputs.shape[-1])) if dims is None else dims
     total = None
     for axis in axes:
         second = gradient(
-            first[:, axis : axis + 1], inputs, component=0, create_graph=create_graph
-        )[:, axis : axis + 1]
+            first[..., axis : axis + 1], inputs, component=0, create_graph=create_graph
+        )[..., axis : axis + 1]
         total = second if total is None else total + second
     if total is None:
         raise ValueError("laplacian needs at least one dimension")

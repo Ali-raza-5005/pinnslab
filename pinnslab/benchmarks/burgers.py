@@ -172,8 +172,8 @@ def make_pde(spec: ResidualSpec, problem: Problem) -> ResidualTerm:
         # the column that is already in the graph. Two backward passes, not
         # three (see diffops.second_partial's note).
         du = gradient(u, x)
-        u_x, u_t = du[:, 0:1], du[:, 1:2]
-        u_xx = gradient(u_x, x)[:, 0:1]
+        u_x, u_t = du[..., 0:1], du[..., 1:2]
+        u_xx = gradient(u_x, x)[..., 0:1]
         return (u_t + u * u_x - nu * u_xx).squeeze(-1)
 
     return pde
@@ -186,7 +186,7 @@ def make_ic(spec: ResidualSpec, problem: Problem) -> ResidualTerm:
 
     def ic(state: TrainState, points: torch.Tensor) -> torch.Tensor:
         u = state.nets[net_name](points)
-        target = -torch.sin(math.pi * points[:, 0:1])
+        target = -torch.sin(math.pi * points[..., 0:1])
         return (u - target).squeeze(-1)
 
     return ic

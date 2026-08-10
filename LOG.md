@@ -5,6 +5,55 @@ phase, days left in timebox. Newest first.
 
 ---
 
+## 2026-08-08 — bootstrap step 5: the search layer (bootstrap complete)
+
+- **Ran**: DESIGN.md §9 step 5 —
+  `search/{space,spec,algorithms,population,evaluate,cache,state,loop}.py`.
+  333 → 401 tests, full suite ~89s. The bootstrap is finished; from here the
+  work is paper-driven.
+- **Learned (the expensive one, and it rewrites §6)**: **`vmap` cannot host a
+  PINN residual.** §6 prescribed `torch.func.vmap` over `stack_module_state` +
+  `functional_call`. A residual differentiates the net w.r.t. its *inputs*, so
+  it must call `requires_grad_()` on the collocation points, and vmap refuses
+  that outright. Making it work would mean respelling every PDE against
+  `jacrev`/`hessian` — the per-paper monkey-patching §1 exists to avoid. Fixed
+  by keeping the goal and dropping the mechanism: put the population on a
+  **leading batch dimension** and build one graph. `diffops` now indexes with
+  `...` instead of a leading colon, so one residual serves both a single run
+  and a population and never learns the population exists. Verified before
+  building on it, not after: batched vs separate evaluation of a Burgers
+  residual agrees to **0.0e+00**, and one Adam over stacked `(P, ...)` params
+  drifts **1.1e-16** from P separate Adams over 25 steps (Adam is elementwise,
+  so this is exact in principle and the number is just float noise).
+- **Also measured, and it deflates a design claim**: batching gives **1.7× at
+  P=4, 2.8× at P=8, 3.4× at P=16, ~2.2× at P=50** on this CPU with a real
+  Burgers residual — not §6's "20–50×", which is a GPU claim about kernel
+  launch overhead and is **untested here**. Recorded as untested in §6 rather
+  than quietly inherited; an unverified speedup is a hole in the compute-parity
+  defence.
+- **Learned (a real bug, caught by the batched-vs-sequential equivalence
+  test)**: `BatchedEvaluator` called `configure_runtime` once for the whole
+  population, but that reseeds the global RNG and `assemble` draws the initial
+  weights from it — so candidate *k*'s initialisation depended on **how many
+  candidates preceded it in the batch**. A config's fitness was a function of
+  its position, which silently breaks the candidate cache, whose whole premise
+  is that `(config_hash, steps)` names one experiment. Now reseeded per
+  candidate, pinned by a test that scores a config first, last and alone.
+- **Decided**: only `random` and `de` ship. Random search is not a placeholder —
+  §8 makes it a mandatory matched-budget baseline, and DE's generation 0 *is* a
+  random sample at the same seed, so the two are paired. PSO/GA/GWO are one
+  file each under rule 2 when a paper needs them. Also: the cache is keyed on
+  `(config_hash, steps)`, because a fitness at 200 steps is not the same number
+  as one at 20000; and `SearchState.best()` compares only within a fidelity
+  rung, or the search crowns candidates that got lucky cheaply and were never
+  tested properly.
+- **Next**: **P0 on paper 1 (sampling).** Still open before the first real
+  sweep: checkpoint retention, and actually fixing the `resample_every` gap
+  rather than guarding it.
+- **Phase**: bootstrap complete. Paper 1 timebox not yet started.
+
+---
+
 ## 2026-08-08 — bootstrap step 4: figures and tables
 
 - **Ran**: DESIGN.md §9 step 4 — `viz/style.py` (house rcParams, palette,

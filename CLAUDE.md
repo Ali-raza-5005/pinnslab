@@ -58,22 +58,28 @@ median+IQR, explicit failure rate · equal tuning budget across methods.
   paying a fresh `import torch`) and `golden`.
 
 ## Current status
-Bootstrap phase. Build order in DESIGN.md §9. **Steps 1-4 are done**: `utils/`,
-`registry/`, `training/` (checkpoint, trainer, build, queue), `components.py`,
-`geometry/adapters.py`, `models/mlp.py`, `physics/diffops.py`,
-`eval/metrics.py`, `benchmarks/burgers.py`, the Burgers golden test,
-`notebooks/kaggle_runner.py`, `viz/{style,aggregate,convergence,tables}.py` and
-`scripts/make_figures.py`. 333 tests.
+Bootstrap phase. Build order in DESIGN.md §9. **Steps 1-5 are done — the
+bootstrap is complete.** `utils/`, `registry/`, `training/` (checkpoint,
+trainer, build, queue), `components.py`, `geometry/adapters.py`,
+`models/mlp.py`, `physics/diffops.py`, `eval/metrics.py`,
+`benchmarks/burgers.py`, the Burgers golden test, `notebooks/kaggle_runner.py`,
+`viz/{style,aggregate,convergence,tables}.py`, `scripts/make_figures.py`, and
+`search/{space,spec,algorithms,population,evaluate,cache,state,loop}.py`.
+401 tests.
 
-The queue derives cell status from the results directory instead of writing a
-status column, and partitions workers statically; a killed sweep is proven
-bit-identical to an uninterrupted one (DESIGN.md §7). Figure conventions and
-the *measured* palette decision are in DESIGN.md §8 — read that before touching
-`viz/`; the palette is not a matter of taste and SciencePlots' default cycle
-was rejected on a colorblind-safety measurement.
+Three things to read before touching the relevant area, because each records a
+*measurement* that overrode an earlier design:
+- **DESIGN.md §6** — the population evaluator is a **batched graph, not
+  `vmap`**; `vmap` cannot host a PINN residual. Residuals are rank-agnostic
+  (`diffops` indexes with `...`), so one residual serves a single run and a
+  population. Global grad-norm clipping is refused: it couples candidates.
+- **DESIGN.md §7** — the queue derives cell status from the results directory
+  instead of writing a status column, and partitions workers statically.
+- **DESIGN.md §8** — figure conventions and the palette; SciencePlots' default
+  cycle was rejected on a colorblind-safety measurement, not on taste.
 
-**Next: step 5** — `search/`: SearchSpec + vmap population evaluator +
-outer-loop checkpoint + candidate cache + multi-fidelity. Then P0 on paper 1.
+**Next: P0 on paper 1 (sampling).** Infrastructure work from here is
+paper-driven — log every core edit a paper task forces in `FRICTION.md`.
 
 Before the first real sweep, in TESTS_TODO.md: checkpoint retention, and the
 `resample_every`-plus-resume gap (collocation points are not checkpointed, so an
