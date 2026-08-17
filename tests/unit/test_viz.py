@@ -78,11 +78,52 @@ def make_row(**over) -> ResultRow:
     return ResultRow(**base)
 
 
+def wall_times(steps, seed: int) -> list[float]:
+    """Cumulative training seconds for one seed — never equal to another seed's.
+
+    Deliberately *not* a function of the step alone. Seeds of one condition run
+    at slightly different speeds (thermal state, whatever else is on the GPU,
+    line-search iteration counts), so no two of them stamp a trace point at the
+    same float second. A fixture that pretended otherwise is what let the
+    wall-clock band ship broken: intersecting exact timestamps left a one-point
+    band on real data and an empty log axis, while the synthetic grid made the
+    test pass.
+
+    Deterministic given ``seed``, because a flaky figure test is worse than no
+    figure test.
+    """
+    rate = 0.10 * (1.0 + 0.13 * seed)  # seconds per step, a few % apart
+    times, elapsed, previous = [], 0.0, None
+    for index, step in enumerate(steps):
+        if previous is not None:
+            jitter = 1.0 + 0.05 * math.sin(2.0 * index + seed)
+            elapsed += (step - previous) * rate * jitter
+        times.append(elapsed)
+        previous = step
+    return times
+
+
+def traced_record(seed: int, *, times, values, **over) -> RunRecord:
+    """A record whose trace timestamps are stated outright.
+
+    For the wall-clock cases where the *timing* is the subject and
+    :func:`wall_times`' realistic-but-opaque numbers would obscure what is
+    being asserted.
+    """
+    row = make_row(run_id=f"run{seed}", seed=seed, **over)
+    trace = tuple(
+        TracePoint(step=10 * index, wall_time=float(t), metrics={"rel_l2": v})
+        for index, (t, v) in enumerate(zip(times, values, strict=True))
+    )
+    return RunRecord(row=row, trace=trace)
+
+
 def make_record(*, seed=0, final=1e-3, curve=None, status=RunStatus.COMPLETED, **over):
     curve = curve if curve is not None else [1.0, 0.1, 0.01]
+    steps = [0, 10, 100]
     trace = tuple(
-        TracePoint(step=step, wall_time=float(step) / 10.0, metrics={"rel_l2": value})
-        for step, value in zip([0, 10, 100], curve, strict=True)
+        TracePoint(step=step, wall_time=t, metrics={"rel_l2": value})
+        for step, t, value in zip(steps, wall_times(steps, seed), curve, strict=True)
     )
     row = make_row(
         run_id=f"run{seed}", seed=seed, status=status,
@@ -341,9 +382,84 @@ def test_the_band_only_spans_steps_every_seed_reached():
 
 
 def test_a_band_can_be_drawn_against_wall_clock(five_seeds):
-    """Equal-compute comparison is a reviewer defence, not an optional extra."""
+    """Equal-compute comparison is a reviewer defence, not an optional extra.
+
+    The five seeds share no timestamp but ``t=0``, which is the realistic case
+    and the one that used to produce a one-point band.
+    """
+    stamps = [{p.wall_time for p in r.trace} for r in five_seeds]
+    assert set.intersection(*stamps) == {0.0}, "the fixture is not realistic"
+
     b = band(five_seeds, "rel_l2", x="wall_time")
-    assert list(b.x) == [0.0, 1.0, 10.0]
+
+    assert b.n_used == 5
+    assert len(b.x) > 2, "a wall-clock band needs more than the t=0 point"
+    assert np.all(np.diff(b.x) > 0), "the grid must be strictly increasing"
+    assert np.all(np.isfinite(b.median))
+    assert np.all(b.q25 <= b.median) and np.all(b.median <= b.q75)
+
+
+def test_the_wall_clock_band_stops_at_the_shortest_seed(five_seeds):
+    """No extrapolation: past the shortest seed the median would be over a
+    shrinking population, which is the failure the step path already refuses."""
+    b = band(five_seeds, "rel_l2", x="wall_time")
+
+    firsts = [min(p.wall_time for p in r.trace) for r in five_seeds]
+    lasts = [max(p.wall_time for p in r.trace) for r in five_seeds]
+    assert b.x[0] == pytest.approx(max(firsts))
+    assert b.x[-1] == pytest.approx(min(lasts))
+    assert b.x[-1] < max(lasts), "the fixture's seeds should not finish together"
+
+
+def test_the_wall_clock_band_interpolates_on_the_log_axis_it_is_drawn_on():
+    """The y axis is logarithmic, so a straight line *on the figure* is
+    log-linear. Interpolated linearly instead, the curve bulges far above every
+    point it connects: at t=50 below, seed 0 would read 0.51 rather than 0.10.
+    """
+    a = traced_record(0, times=[0.0, 1.0, 100.0], values=[1.0, 1.0, 0.01])
+    b_seed = traced_record(1, times=[0.0, 50.0, 100.0], values=[1.0, 0.1, 0.01])
+
+    b = band([a, b_seed], "rel_l2", x="wall_time")
+    at_50 = float(b.median[list(b.x).index(50.0)])
+
+    # seed 0 log-interpolated to 10 ** (-2 * 49/99) = 0.1023, seed 1 exactly
+    # 0.1: a median of ~0.101. Linear interpolation would give (0.51 + 0.1)/2.
+    assert at_50 == pytest.approx(0.101, rel=0.05)
+    assert at_50 < 0.2, "linear interpolation would put this at ~0.3"
+
+
+def test_a_seed_with_one_finite_point_leaves_the_wall_clock_band():
+    """It cannot be interpolated, and pretending otherwise would let one point
+    stand in for a curve. The legend then reports the band's real population."""
+    full = make_record(seed=0)
+    stub = make_record(seed=1, curve=[1.0, math.nan, math.nan])
+    b = band([full, stub], "rel_l2", x="wall_time")
+
+    assert (b.n_used, b.n_total) == (1, 2)
+    assert np.all(np.isfinite(b.median))
+
+
+def test_seeds_whose_traced_intervals_do_not_overlap_are_refused():
+    """Two seeds can only be compared per-second where both were measured. A
+    band stitched across a gap would be extrapolation drawn as data."""
+    quick = traced_record(0, times=[0.1, 0.9], values=[1.0, 0.1])
+    slow = traced_record(1, times=[12.0, 44.0], values=[1.0, 0.1])
+    with pytest.raises(ValueError, match="no common wall_time interval"):
+        band([quick, slow], "rel_l2", x="wall_time")
+
+
+def test_a_wall_clock_figure_renders_when_seeds_share_no_timestamp(
+    five_seeds, tmp_path
+):
+    """The regression that mattered: the band was built, the log axis dropped
+    its only point, and matplotlib raised "Data has no positive values" at
+    *save* time — so nothing caught it until a real results directory was
+    plotted. Saving is therefore part of the test."""
+    fig = convergence_figure(five_seeds, x="wall_time", xscale="log")
+    path = style.save(fig, tmp_path / "convergence_rel_l2_vs_wall_time")
+    plt.close(fig)
+
+    assert path.exists() and path.stat().st_size > 0
 
 
 def test_an_unknown_metric_lists_the_ones_that_exist(five_seeds):

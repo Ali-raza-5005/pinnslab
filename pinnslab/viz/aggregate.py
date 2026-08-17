@@ -14,6 +14,10 @@ than left to whoever writes the plotting script:
   aggregate rows that span GPUs or dtypes (DESIGN.md §5). Timings across a T4
   and a P100 are not comparable, and neither is float32 accuracy against
   float64.
+* **against wall-clock, seeds are interpolated onto a common time grid.** The
+  per-second figure is a §8 reviewer defence, and it cannot be built by
+  intersecting exact timestamps: no two seeds finish a step at the same float
+  second, so the intersection is ``{0.0}``. See :func:`band`.
 
 Deliberately numpy-only. The aggregation a paper needs is a groupby and two
 percentiles; pandas would buy little and would put the ``analysis`` extra
@@ -25,6 +29,7 @@ the caller (DESIGN.md §11).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +46,12 @@ log = get_logger(__name__)
 #: hash, because that *is* the condition (DESIGN.md §4) — a name would be a
 #: second, unhashed identity that can drift out of step with the experiment.
 DEFAULT_LABEL = "config_hash"
+
+#: x axes whose values are continuous, so two seeds never share one exactly and
+#: :func:`band` must interpolate rather than intersect. ``step`` is deliberately
+#: not here: seeds share it exactly, and interpolating a grid every seed already
+#: lands on would invent points nobody measured.
+CONTINUOUS_X = frozenset({"wall_time"})
 
 
 @dataclass(frozen=True)
@@ -226,13 +237,23 @@ def band(
     numbers have to come from the same population. ``include_diverged=True``
     is there for the figure whose subject *is* the divergence.
 
-    Seeds of one condition share a step grid exactly — :class:`MetricSchedule`
-    is stateless, so a resumed run records the steps an uninterrupted one
-    would. Where they do not (a seed that stopped early), the curve is drawn on
-    the steps **all** contributing seeds reached, and the shortfall is reported
-    through ``n_used`` rather than papered over by averaging a shrinking
-    population down the x-axis — a band that silently loses seeds as it goes
-    right gets tighter exactly where the runs are failing.
+    Two x axes, two alignment rules, because the axes are different kinds of
+    number (see :data:`CONTINUOUS_X`):
+
+    * **``step`` is shared exactly.** :class:`MetricSchedule` is stateless, so a
+      resumed run records the steps an uninterrupted one would and every seed
+      lands on the same grid. The band is drawn on the intersection. Where a
+      seed stopped early, the curve is drawn on the steps **all** contributing
+      seeds reached, and the shortfall is reported through ``n_used`` rather
+      than papered over by averaging a shrinking population down the x-axis — a
+      band that silently loses seeds as it goes right gets tighter exactly where
+      the runs are failing.
+    * **``wall_time`` is never shared.** Two seeds do not finish a step at the
+      same float second, so intersecting exact times leaves only ``t=0`` — a
+      one-point band, and an empty figure once a log axis drops it. Seeds are
+      interpolated onto a common time grid instead; see
+      :func:`_interpolate_onto_common_grid` for what that does and refuses to
+      do.
     """
     eligible = [r for r in records if include_diverged or r.converged]
     usable = [r for r in eligible if r.trace]
@@ -263,6 +284,35 @@ def band(
             f"{sorted({k for r in usable for p in r.trace for k in p.metrics})}"
         )
 
+    if x in CONTINUOUS_X:
+        grid, values, n_used = _interpolate_onto_common_grid(per_run, x=x, label=label)
+    else:
+        grid, values, n_used = _intersect_exactly(
+            per_run, x=x, metric=metric, label=label, n_records=len(records)
+        )
+
+    q25, median, q75 = np.nanpercentile(values, [25, 50, 75], axis=0)
+    return Band(
+        label=label,
+        metric=metric,
+        x=grid,
+        median=median,
+        q25=q25,
+        q75=q75,
+        n_total=len(records),
+        n_used=n_used,
+    )
+
+
+def _intersect_exactly(
+    per_run: Sequence[dict[float, float]],
+    *,
+    x: str,
+    metric: str,
+    label: str,
+    n_records: int,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """The shared grid for an x every seed lands on exactly (``step``)."""
     common = sorted(set.intersection(*(set(p) for p in per_run)))
     if not common:
         raise ValueError(f"the runs share no common {x} at which to compare {metric}")
@@ -274,21 +324,94 @@ def band(
             label,
             dropped,
             len(per_run),
-            len(records),
+            n_records,
+        )
+    values = np.array([[p[k] for k in common] for p in per_run], dtype=float)
+    return np.asarray(common, dtype=float), values, len(per_run)
+
+
+def _interpolate_onto_common_grid(
+    per_run: Sequence[dict[float, float]], *, x: str, label: str
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """The shared grid for a continuous x (``wall_time``), by interpolation.
+
+    Five decisions, each of which is a way to get a per-second figure wrong:
+
+    * **The grid is the union of the seeds' own timestamps**, not an arbitrary
+      linspace. There is no resolution knob to pick, and the band keeps the
+      density the trace schedule already chose — dense early, sparse late,
+      which is where a log time axis wants its points anyway.
+    * **Clipped to the overlap ``[max(first), min(last)]``: no extrapolation.**
+      Past the shortest seed's last timestamp the median would be over a
+      shrinking population, which is the same failure the ``step`` path refuses.
+      The clip is reported, because "the band stops at 40s while one seed ran
+      for 90s" is information about the comparison.
+    * **Interpolation is linear in log(metric)** when a seed's values are all
+      positive, and linear otherwise. The figure's y axis is logarithmic, so a
+      straight line *on the plot* is a log-linear one; interpolating linearly
+      there would draw a curve that bulges above every point it connects.
+    * **Non-finite points are dropped per seed** before interpolating. A NaN
+      inside a trace would otherwise poison a whole interval of the median.
+      A seed left with fewer than two finite points cannot be interpolated and
+      leaves the band, which ``n_used`` then reports.
+    * **Duplicate timestamps keep the last value.** A coarse clock can stamp
+      two trace points identically; ``np.interp`` needs a strictly increasing
+      x. (``per_run`` is already keyed on x, so this is the dict's doing.)
+    """
+    curves = []
+    for points in per_run:
+        finite = {t: v for t, v in points.items() if math.isfinite(v)}
+        if len(finite) < 2:
+            continue
+        times = np.array(sorted(finite), dtype=float)
+        curves.append((times, np.array([finite[t] for t in times], dtype=float)))
+
+    if len(curves) != len(per_run):
+        log.warning(
+            "%r: %d seed(s) have fewer than two finite trace points and cannot "
+            "be interpolated onto a %s grid; they are excluded from the band",
+            label,
+            len(per_run) - len(curves),
+            x,
+        )
+    if not curves:
+        raise ValueError(
+            f"no seed has two finite trace points, so there is no {x} interval "
+            "over which to compare them"
         )
 
-    values = np.array([[p[k] for k in common] for p in per_run], dtype=float)
-    q25, median, q75 = np.nanpercentile(values, [25, 50, 75], axis=0)
-    return Band(
-        label=label,
-        metric=metric,
-        x=np.asarray(common, dtype=float),
-        median=median,
-        q25=q25,
-        q75=q75,
-        n_total=len(records),
-        n_used=len(per_run),
-    )
+    lo = max(float(times[0]) for times, _ in curves)
+    hi = min(float(times[-1]) for times, _ in curves)
+    if not hi > lo:
+        raise ValueError(
+            f"the runs share no common {x} interval: they overlap only at "
+            f"{lo:g}. Every seed must have run long enough to be compared with "
+            "the shortest one."
+        )
+
+    longest = max(float(times[-1]) for times, _ in curves)
+    if longest > hi:
+        log.warning(
+            "%r: the %s band ends at %.4g (the shortest seed's last point); "
+            "the longest seed reached %.4g and its tail is not extrapolated "
+            "over",
+            label,
+            x,
+            hi,
+            longest,
+        )
+
+    grid = np.unique(np.concatenate([times for times, _ in curves]))
+    grid = grid[(grid >= lo) & (grid <= hi)]
+    values = np.array([_interp(grid, times, ys) for times, ys in curves])
+    return grid, values, len(curves)
+
+
+def _interp(grid: np.ndarray, times: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Interpolate onto ``grid``, in log space where the metric allows it."""
+    if np.all(values > 0.0):
+        return np.exp(np.interp(grid, times, np.log(values)))
+    return np.interp(grid, times, values)
 
 
 def _x_of(point: TracePoint, x: str) -> float:
@@ -300,6 +423,7 @@ def _x_of(point: TracePoint, x: str) -> float:
 
 
 __all__ = [
+    "CONTINUOUS_X",
     "DEFAULT_LABEL",
     "Band",
     "RunRecord",
