@@ -171,11 +171,21 @@ def _stack_points(
     The groups are concatenated in sorted name order so the slice map is stable
     across candidates and across processes — a resumed search must lay the
     batch out identically or the residual terms silently swap point groups.
+
+    The candidate's own networks are handed to the sampler, because an adaptive
+    one may score candidate points with them even on its first draw. Note the
+    cloud is drawn **once**: :func:`train_population` does not resample, so a
+    search whose subject is *resampling* (rather than the initial distribution)
+    belongs in :class:`SequentialEvaluator`.
     """
     clouds, layouts = [], []
     for part, cfg in zip(parts, configs, strict=True):
         state = _EnsembleState(
-            {}, {}, torch.Generator().manual_seed(cfg.seed), ctx.dtype, ctx.device
+            part.nets,
+            part.extra_params,
+            torch.Generator().manual_seed(cfg.seed),
+            ctx.dtype,
+            ctx.device,
         )
         part.on_resample(state)
         groups = state.points

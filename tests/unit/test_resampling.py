@@ -251,6 +251,21 @@ def test_a_sampler_sees_the_step_and_the_cloud_it_is_replacing(results_root):
     assert [c["step"] for c in rest] == [0, 10, 20]
 
 
+def test_the_batched_search_path_hands_samplers_the_candidate_networks():
+    """The population evaluator draws each candidate's cloud through the same
+    sampler objects, so an adaptive one must find real networks there rather
+    than an empty dict — it may score even its first draw with them."""
+    from pinnslab.search.evaluate import BatchedEvaluator
+
+    RecordingSampler.calls.clear()
+    cfg = resampling_config(strategy="test.recorder", steps=5)
+
+    BatchedEvaluator()([cfg], steps=5)
+
+    assert RecordingSampler.calls, "the batched path never drew a cloud"
+    assert RecordingSampler.calls[0]["nets"] == ["u"]
+
+
 def test_a_geometric_sampler_rejects_options_it_would_ignore():
     """A forwarded option nobody reads is a typo or the wrong sampler name, and
     silently ignoring it means training a different experiment than declared."""
