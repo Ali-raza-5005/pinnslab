@@ -69,7 +69,7 @@ trainer, build, queue), `components.py`, `geometry/adapters.py`,
 Hardened for use 2026-08-17 (**v0.2.0**, see CHANGELOG.md): the sampler seam
 (`geometry/samplers.py`) is wired to the registry, the collocation cloud is
 checkpointed, `scripts/{run,run_sweep,run_search,benchmark_population}.py` and
-`examples/` exist, and CI runs both test commands. 449 tests.
+`examples/` exist, and CI runs both test commands. 451 tests.
 
 Four things to read before touching the relevant area, because each records a
 *measurement* that overrode an earlier design:

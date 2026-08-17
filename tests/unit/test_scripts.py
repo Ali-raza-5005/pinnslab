@@ -230,6 +230,29 @@ def test_register_imports_a_paper_s_own_components(tmp_path):
     assert "test.script_plugin" in SAMPLERS
 
 
+def test_the_ci_workflow_parses_and_runs_both_documented_commands():
+    """A malformed workflow does not fail loudly — GitHub just declines to run
+    it, and the repo looks green because nothing ran. This file was in fact
+    invalid when first written (an unquoted ``budget: <60s`` in a step name).
+
+    It also pins that CI runs the two commands CLAUDE.md requires of a session,
+    rather than drifting into some third thing nobody runs by hand.
+    """
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    )
+    # `on:` is YAML 1.1's boolean true; PyYAML parses the key that way.
+    triggers = workflow.get("on") or workflow.get(True)
+    runs = [step.get("run", "").strip() for step in workflow["jobs"]["test"]["steps"]]
+
+    assert {"push", "pull_request"} <= set(triggers)
+    assert any("ruff check ." in run for run in runs)
+    assert any('pytest -m "unit and not slow"' in run for run in runs)
+    assert any(
+        run.startswith("pytest") and "-m" not in run for run in runs
+    ), "CI never runs the full suite, so slow and golden tests are ungated"
+
+
 @pytest.mark.slow
 def test_the_scripts_run_from_a_bare_checkout(tmp_path):
     """No install, no PYTHONPATH: ``python scripts/run.py`` must just work.

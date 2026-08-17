@@ -91,7 +91,7 @@ All three are fixed, and the repo is now usable end to end from a clean clone.
 
 ### Tests
 
-401 -> 449. New: `test_resampling.py` (the sampler seam and bit-exact resume for
+401 -> 451. New: `test_resampling.py` (the sampler seam and bit-exact resume for
 a plain and an adaptive sampler), `test_examples.py`, `test_scripts.py`,
 `test_plugins.py`, wall-clock band cases in `test_viz.py`, and search-spec
 loading in `test_search.py`. The SIGKILL sweep test now kills the *resampling*
@@ -106,7 +106,9 @@ against the pre-fix behaviour.
 - **Kaggle itself**: session limits, dataset publishing, the two-GPU split. The
   local twin of the notebook (`scripts/run_sweep.py`) is tested, including a
   real `os._exit` kill.
-- **CI has not run**, having never been pushed.
+- **CI has not run**, having never been pushed. Its workflow file is parsed and
+  its commands are asserted by a test, because a malformed workflow does not
+  fail loudly — GitHub declines to run it and the repo looks green.
 
 ## v0.1.0 — 2026-08-08
 

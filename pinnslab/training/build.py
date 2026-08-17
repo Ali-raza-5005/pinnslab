@@ -87,7 +87,7 @@ def assemble(cfg: RunConfig, ctx: RuntimeContext) -> Assembly:
         extra_params=extra_params,
         residual_fn=_make_residual_fn(cfg, terms),
         weighting=_build_weighting(cfg),
-        on_resample=_make_resampler(cfg, problem, ctx),
+        on_resample=_make_resampler(cfg, problem),
         eval_fn=_make_eval_fn(problem, ctx),
     )
 
@@ -238,12 +238,12 @@ class Resampler:
                 sampler.load_state_dict(payload[name])
 
 
-def _make_resampler(cfg: RunConfig, problem: Problem, ctx: RuntimeContext) -> Resampler:
+def _make_resampler(cfg: RunConfig, problem: Problem) -> Resampler:
     """Build the sampler each point group named (CLAUDE.md rule 9).
 
-    ``ctx`` is not consulted: a sampler takes dtype and device from the
-    ``TrainState`` it is called with, which is the same thing and is the only
-    one available to a sampler written in a paper repo.
+    No ``RuntimeContext`` here on purpose: a sampler reads dtype and device off
+    the ``TrainState`` it is called with, which is the same pair and is the only
+    one a sampler written in a paper repo can reach.
     """
     return Resampler(
         {

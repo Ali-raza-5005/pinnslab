@@ -47,7 +47,7 @@ jobs:
       - name: Lint
         run: ruff check .
 
-      - name: Unit tests (the pre-commit gate, DESIGN.md §3 budget: <60s)
+      - name: "Unit tests (the pre-commit gate, DESIGN.md §3 budget: <60s)"
         run: pytest -m "unit and not slow" -q --durations=10
 
       - name: Full suite (adds slow + golden, the pre-push gate)
