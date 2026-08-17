@@ -5,6 +5,47 @@ phase, days left in timebox. Newest first.
 
 ---
 
+## 2026-08-17 — the three things between the bootstrap and a sweep
+
+- **Ran**: full suite 445 tests green (401 before), unit gate ~40-57s against
+  the 60s budget, ruff clean. Also ran the whole loop for real, outside the
+  tests: a 10-cell sweep (2 arms x 5 seeds, 7m25s), figures and tables from it,
+  and a 2-generation DE search (4m08s).
+- **Learned (the one that would have cost a paper)**: the per-second figure
+  could not be drawn from real data *at all*. `band()` intersected exact float
+  timestamps across seeds; seeds never share one, so the band was the single
+  point t=0, the log axis dropped it, and matplotlib raised inside `savefig`.
+  Its test passed because the fixture gave every seed `wall_time = step/10`. A
+  fixture that cannot occur is worse than no fixture: it converts an untested
+  path into one that looks tested. Now interpolated onto a common grid, in log
+  space, clipped to the interval every seed measured.
+- **Learned (the structural one)**: `SAMPLERS` had been declared since day one
+  and *nothing read it* — `build.py` passed `strategy:` straight to DeepXDE. So
+  the one axis this whole program is about could not be extended without editing
+  core, while the config docstring claimed it could. A registry with no lookup
+  is not an extension point, and the only way to know is to try to extend it
+  from outside. Fixed in `geometry/samplers.py`; `examples/rad_sampler.py` is
+  the proof, written the way a paper repo would write it.
+- **Decided**: the collocation cloud is **stored in the checkpoint, not
+  replayed** from the RNG. Replay works only while sampling is a pure function
+  of the stream; an adaptive cloud is a function of the network as it stood at
+  the last resample, and that network is gone after a resume. Cost is one
+  `(N, d)` tensor per group per checkpoint — small beside Adam's two moments per
+  parameter. That closes the `resample_every` gap, so `run_queue`'s refusal and
+  its `allow_resampling` waiver are deleted, and the SIGKILL sweep test now
+  kills the resampling cell between resamples. Both regression tests were
+  checked to fail against the old behaviour before being kept.
+- **Also**: `python scripts/x.py` never worked from a checkout (Python puts the
+  *script's* directory on `sys.path`, not the cwd) — every documented command
+  failed for exactly the person following the README. CI added. Tagged v0.2.0.
+- **Next**: **P0 on paper 1 (sampling)**, on the real viscosity and a real
+  budget. Still open: checkpoint retention, and the GPU speedup measurement
+  (`scripts/benchmark_population.py` is ready and waiting for hardware).
+- **Phase**: bootstrap complete, infrastructure hardened. Paper 1 timebox not
+  yet started.
+
+---
+
 ## 2026-08-08 — bootstrap step 5: the search layer (bootstrap complete)
 
 - **Ran**: DESIGN.md §9 step 5 —

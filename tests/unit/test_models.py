@@ -89,7 +89,16 @@ def test_initialisation_is_ours_not_torchs_default(spec):
     If this silently fell back to ``nn.Linear``'s default (Kaiming-uniform
     weights *and* uniform non-zero biases), every golden-test tolerance would
     become a statement about the installed torch version.
+
+    Seeded explicitly, because the assertion below is about a *sample* standard
+    deviation over 20-40 weights: without a fixed stream it depends on how many
+    draws every preceding test happened to make, and it did in fact fail on one
+    ordering (2026-08-17) while passing on another. A tolerance wide enough to
+    absorb that would no longer distinguish Glorot from Kaiming — the thing it
+    exists to catch — so the fix is to remove the uncontrolled variable rather
+    than to loosen the number.
     """
+    set_seed(0)
     net = build_net(spec)
     for layer in net.modules():
         if isinstance(layer, nn.Linear):

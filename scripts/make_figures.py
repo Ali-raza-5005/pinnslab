@@ -22,6 +22,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import _bootstrap  # noqa: F401  (puts the checkout on sys.path)
+
 from pinnslab.viz import style
 from pinnslab.viz.aggregate import assert_comparable, group, load_records, summarise
 from pinnslab.viz.convergence import convergence_figure, label_for

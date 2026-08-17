@@ -8,8 +8,10 @@ way a :class:`RunConfig` does.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from pydantic import Field, model_validator
 
 from pinnslab.registry.hashing import config_hash
@@ -134,4 +136,21 @@ class SearchSpec(Spec):
         return config_hash(self.identity())
 
 
-__all__ = ["FidelitySchedule", "FitnessSpec", "SearchSpec"]
+def load_search_spec(path: str | Path) -> SearchSpec:
+    """``search.yaml`` -> validated :class:`SearchSpec`.
+
+    The mirror of :func:`pinnslab.registry.config.load_config`, and for the same
+    reason: a search is a hyperparameter of the research, so it lives in a file
+    that is validated and hashed rather than in a script.
+    """
+    path = Path(path)
+    with path.open("r", encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"{path} must contain a YAML mapping, got {type(raw).__name__}"
+        )
+    return SearchSpec(**raw)
+
+
+__all__ = ["FidelitySchedule", "FitnessSpec", "SearchSpec", "load_search_spec"]

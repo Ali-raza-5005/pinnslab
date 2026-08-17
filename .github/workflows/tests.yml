@@ -1,0 +1,54 @@
+name: tests
+
+# Push and PR. A solo repo has no reviewer to catch a red suite, so the gate has
+# to be automatic — and the two commands below are exactly the two a session is
+# supposed to run by hand (CLAUDE.md, "Tests — two commands").
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A second push supersedes the first: nothing here is worth queueing for.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # geometry/adapters.py sets this before importing deepxde, but making it
+      # explicit means a CI image that later grows a TensorFlow install cannot
+      # change which backend the tests ran on.
+      DDE_BACKEND: pytorch
+      # Everything here is CPU-only by design (DESIGN.md §3: the unit and golden
+      # suites are CPU-runnable), so the multi-GB CUDA wheels are pure cost.
+      PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.11 is the floor declared in pyproject.toml; the author develops on
+          # 3.13. Testing the floor is the useful half — a 3.13-only construct
+          # that breaks the declared minimum is exactly what CI should catch.
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Unit tests (the pre-commit gate, DESIGN.md §3 budget: <60s)
+        run: pytest -m "unit and not slow" -q --durations=10
+
+      - name: Full suite (adds slow + golden, the pre-push gate)
+        run: pytest -q --durations=10

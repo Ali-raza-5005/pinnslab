@@ -65,9 +65,13 @@ trainer, build, queue), `components.py`, `geometry/adapters.py`,
 `benchmarks/burgers.py`, the Burgers golden test, `notebooks/kaggle_runner.py`,
 `viz/{style,aggregate,convergence,tables}.py`, `scripts/make_figures.py`, and
 `search/{space,spec,algorithms,population,evaluate,cache,state,loop}.py`.
-401 tests.
 
-Three things to read before touching the relevant area, because each records a
+Hardened for use 2026-08-17 (**v0.2.0**, see CHANGELOG.md): the sampler seam
+(`geometry/samplers.py`) is wired to the registry, the collocation cloud is
+checkpointed, `scripts/{run,run_sweep,run_search,benchmark_population}.py` and
+`examples/` exist, and CI runs both test commands. 445 tests.
+
+Four things to read before touching the relevant area, because each records a
 *measurement* that overrode an earlier design:
 - **DESIGN.md §6** — the population evaluator is a **batched graph, not
   `vmap`**; `vmap` cannot host a PINN residual. Residuals are rank-agnostic
@@ -77,6 +81,11 @@ Three things to read before touching the relevant area, because each records a
   instead of writing a status column, and partitions workers statically.
 - **DESIGN.md §8** — figure conventions and the palette; SciencePlots' default
   cycle was rejected on a colorblind-safety measurement, not on taste.
+- **`viz/aggregate.band`** — `step` is intersected exactly, `wall_time` is
+  interpolated onto a common grid. Seeds never share a timestamp, so the
+  per-second figure has no other way to exist; the version that intersected them
+  crashed on every real results directory while its test passed on a fixture
+  where all seeds ran at identical speed.
 
 **Next: P0 on paper 1 (sampling).** Infrastructure work from here is
 paper-driven — log every core edit a paper task forces in `FRICTION.md`.

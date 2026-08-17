@@ -1,0 +1,58 @@
+# A search over RAD's two knobs, against examples/configs/burgers_rad.yaml.
+#
+# The space names *config paths*, so every candidate is a real RunConfig that
+# pydantic re-validates and that has its own identity hash — a search cannot
+# propose a configuration a human could not have written by hand, and every
+# candidate joins to the results and the figures on the same key.
+#
+# Run it with:
+#
+#   python scripts/run_search.py examples/search.yaml \
+#       --base examples/configs/burgers_rad.yaml \
+#       --register examples/rad_sampler.py --root analysis/search
+#
+# Cost, before you start it: pop_size x generations x the fidelity ladder, which
+# `SearchSpec.total_inner_steps` computes and `scripts/run_search.py` prints. A
+# search that wins while burning 3000x the compute has not won (DESIGN.md §8),
+# so that number belongs in the paper next to the result.
+name: burgers-rad-knobs
+seed: 0
+
+space:
+  # k sharpens the residual weighting; c is the uniform floor. Log-scaled,
+  # because c spans two decades and a linear search would spend 90% of its
+  # proposals in the top one.
+  sampling.points.interior.options.k:
+    kind: continuous
+    low: 0.25
+    high: 3.0
+  sampling.points.interior.options.c:
+    kind: continuous
+    low: 0.1
+    high: 10.0
+    log: true
+
+# DE is the "serious optimizer" baseline DESIGN.md §8 asks for. Swap in `random`
+# and re-run at the same seed for the matched-budget control: DE's generation 0
+# *is* a random sample at that seed, so the two are paired.
+algorithm: de
+pop_size: 6
+generations: 2
+
+budget:
+  # Every candidate gets 200 inner steps; the better half continue to 600. The
+  # rung a candidate reached is recorded, because comparing a 200-step fitness
+  # against a 600-step one as if they were the same number is the mistake this
+  # structure exists to make visible.
+  rungs: [200, 600]
+  keep: 0.5
+
+fitness:
+  metric: rel_l2
+  direction: min
+
+# false, and not by accident: `rel_l2` is measured against the reference
+# solution, which only the single-run path computes. The batched evaluator
+# scores the training objective instead, and it does not resample — so a search
+# over *sampling* belongs here regardless. See pinnslab/search/evaluate.py.
+batched: false

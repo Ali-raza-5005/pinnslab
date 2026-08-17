@@ -26,7 +26,7 @@ from pinnslab.search.space import (
     SearchSpace,
     build_domain,
 )
-from pinnslab.search.spec import FidelitySchedule, SearchSpec
+from pinnslab.search.spec import FidelitySchedule, SearchSpec, load_search_spec
 from pinnslab.search.state import SearchState, capture_rng, restore_rng
 
 pytestmark = pytest.mark.unit
@@ -220,6 +220,38 @@ def test_the_spec_hash_ignores_seed_but_not_the_space():
     """Several seeds of one search are one condition (DESIGN.md §4)."""
     assert spec(seed=1).identity_hash() == spec(seed=2).identity_hash()
     assert spec(pop_size=8).identity_hash() != spec(pop_size=6).identity_hash()
+
+
+def test_a_search_spec_round_trips_through_yaml(tmp_path):
+    """A search is a hyperparameter of the research, so it lives in a validated,
+    hashed file rather than in a script (CLAUDE.md rule 4) — which needs a
+    loader, the mirror of `load_config`."""
+    import yaml
+
+    original = spec(pop_size=8)
+    path = tmp_path / "search.yaml"
+    path.write_text(yaml.safe_dump(original.model_dump(mode="json")), encoding="utf-8")
+
+    assert load_search_spec(path).identity_hash() == original.identity_hash()
+
+
+def test_a_search_yaml_that_is_not_a_mapping_is_refused(tmp_path):
+    path = tmp_path / "search.yaml"
+    path.write_text("- not\n- a mapping\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="mapping"):
+        load_search_spec(path)
+
+
+def test_a_search_yaml_with_an_unknown_field_is_refused(tmp_path):
+    """`extra="forbid"`, so a typo'd key is a load error rather than a search
+    that quietly ignored half of what it was told."""
+    path = tmp_path / "search.yaml"
+    path.write_text(
+        "space:\n  seed: {kind: integer, low: 1, high: 4}\npopulation_size: 8\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="population_size"):
+        load_search_spec(path)
 
 
 # -- algorithms ----------------------------------------------------------------

@@ -45,7 +45,10 @@ bit-identical to an uninterrupted sweep (pinned by
 """
 
 # ---------------------------------------------------------------- cell 1 ----
-# !pip install -q git+https://github.com/<you>/pinnslab@v0.3.0
+# !pip install -q git+https://github.com/Ali-raza-5005/pinnslab@v0.2.0
+#
+# The tag, never a branch: `git tag -l` in the checkout is the list of what
+# exists. A session that installs from a branch cannot say what it ran.
 
 # ---------------------------------------------------------------- cell 2 ----
 # Seed the working root from the previous sessions' Dataset (see the docstring).

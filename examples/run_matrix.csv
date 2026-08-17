@@ -1,0 +1,11 @@
+config,seed,notes
+configs/burgers_uniform.yaml,0,control arm
+configs/burgers_uniform.yaml,1,control arm
+configs/burgers_uniform.yaml,2,control arm
+configs/burgers_uniform.yaml,3,control arm
+configs/burgers_uniform.yaml,4,control arm
+configs/burgers_rad.yaml,0,treatment arm
+configs/burgers_rad.yaml,1,treatment arm
+configs/burgers_rad.yaml,2,treatment arm
+configs/burgers_rad.yaml,3,treatment arm
+configs/burgers_rad.yaml,4,treatment arm

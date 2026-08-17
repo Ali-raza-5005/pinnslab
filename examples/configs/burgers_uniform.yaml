@@ -1,0 +1,107 @@
+# Baseline: 1-D Burgers with uniform collocation points, resampled periodically.
+#
+# The control arm of the sampling comparison in examples/README.md. It differs
+# from examples/configs/burgers_rad.yaml in exactly one field —
+# `sampling.points.interior.strategy` — so the difference in the result is
+# attributable to the sampler and to nothing else. Same point count, same
+# resampling cadence, same optimizer schedule, same seeds: compute parity is a
+# reviewer defence (DESIGN.md §8), and it starts in the config.
+#
+# `tags` are excluded from the config hash, so labelling the arm here does not
+# make it a different condition. It is what `--by method` groups on when the
+# figures are drawn.
+name: burgers-uniform
+tags:
+  method: uniform
+
+seed: 0
+dtype: float64
+device: auto
+deterministic: true
+
+problem:
+  name: burgers1d
+  options:
+    # 0.1/pi, ten times the literature-standard 0.01/pi. Deliberate, and
+    # the reason is stated rather than hidden: at 0.01/pi the solution
+    # steepens into a near-shock that a run of this size cannot resolve
+    # (measured: rel-L2 0.62 after 3100 steps, i.e. a converged loss on a
+    # wrong solution). Resolving it takes ~15k Adam steps — see the note
+    # in tests/golden/test_burgers.py. Smoothed, the same budget reaches
+    # rel-L2 ~6e-4 in ~30s of laptop CPU, which is what makes this an
+    # example you can actually run.
+    nu: 0.03183098861837907
+
+nets:
+  u:
+    arch: mlp
+    inputs: 2
+    outputs: 1
+    width: 20
+    depth: 4
+    activation: tanh
+    init: glorot_normal
+
+residuals:
+  # The PDE holds on the closure of the domain, not the interior alone: see
+  # pinnslab/benchmarks/burgers.py for the ~6x rel-L2 this costs when dropped.
+  pde:
+    kind: burgers1d.pde
+    points: [interior, initial, boundary]
+  ic:
+    kind: burgers1d.ic
+    points: initial
+  bc:
+    kind: burgers1d.bc
+    points: boundary
+
+sampling:
+  points:
+    interior:
+      region: interior
+      n: 1000
+      strategy: pseudo
+    initial:
+      region: initial
+      n: 100
+    boundary:
+      region: boundary
+      n: 50
+
+weighting:
+  kind: mean
+
+stages:
+  - name: adam
+    steps: 1500
+    resample_every: 250
+    optimizers:
+      - name: adam
+        lr: 0.001
+  # L-BFGS polishes on a fixed cloud: a line search assumes the objective does
+  # not move underneath it, and resampling mid-stage would move it.
+  - name: lbfgs
+    steps: 100
+    optimizers:
+      - name: lbfgs
+        lr: 1.0
+
+eval:
+  best_metric: rel_l2
+  best_mode: min
+  # Time-to-target is reported alongside final accuracy (DESIGN.md §8). Both
+  # fields are needed or neither is recorded.
+  target_metric: rel_l2
+  target_value: 0.01
+
+logging:
+  trace:
+    every: 100
+    record_first: true
+    record_last: true
+
+checkpoint:
+  every_seconds: null
+  every_steps: 500
+  save_best: true
+  save_last: true
