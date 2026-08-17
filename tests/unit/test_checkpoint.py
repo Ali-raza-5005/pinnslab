@@ -5,9 +5,18 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pinnslab.registry.config import CheckpointSpec, OptimizerSpec, StageSpec
+from pinnslab.registry.config import (
+    CheckpointSpec,
+    EvalSpec,
+    LoggingSpec,
+    OptimizerSpec,
+    StageSpec,
+)
 from pinnslab.registry.run import Run
+from pinnslab.registry.schema import MetricSchedule
 from pinnslab.training.checkpoint import (
+    BEST_NAME,
+    LAST_NAME,
     CheckpointManager,
     CheckpointPayload,
     load_checkpoint,
@@ -298,3 +307,57 @@ def test_to_dict_does_not_copy_the_tensors_it_is_about_to_serialise():
         seed=0,
     )
     assert payload.to_dict()["nets"]["u"]["w"].data_ptr() == weight.data_ptr()
+
+
+def test_best_pt_carries_the_model_but_not_the_optimizer(results_root):
+    """Storage, and only storage: nothing resumes from ``best.pt`` — resume is
+    ``last.pt`` by definition, because best-so-far is not a point the run ever
+    continued from. Adam's two moments per parameter are most of the file, and
+    it is rewritten every time the metric improves.
+    """
+    cfg = _long_config(
+        eval=EvalSpec(best_metric="loss", best_mode="min"),
+        logging=LoggingSpec(trace=MetricSchedule(every=25)),
+    )
+    _train(cfg, results_root, "retention")
+
+    best = load_checkpoint(results_root / "retention" / "checkpoints" / BEST_NAME)
+    last = load_checkpoint(results_root / "retention" / "checkpoints" / LAST_NAME)
+
+    assert best.optimizers == []
+    assert best.nets["u"], "the weights are the point of best.pt"
+    assert best.rng and best.step >= 0
+    assert last.optimizers, "last.pt must stay resumable"
+    assert (
+        (results_root / "retention" / "checkpoints" / BEST_NAME).stat().st_size
+        < (results_root / "retention" / "checkpoints" / LAST_NAME).stat().st_size
+    )
+
+
+def test_dropping_the_optimizer_state_leaves_everything_a_reader_needs():
+    payload = CheckpointPayload(
+        step=7,
+        stage_index=1,
+        steps_in_stage=3,
+        nets={"u": {"w": torch.zeros(2)}},
+        extra_params={"nu": torch.ones(())},
+        optimizers=[{"state": {"heavy": torch.zeros(1000)}}],
+        rng={"torch": torch.zeros(1)},
+        elapsed=1.5,
+        config_hash="abc",
+        seed=3,
+        points={"interior": torch.zeros(4, 2)},
+        sampler_state={"interior": {"generations": 2}},
+    )
+
+    stripped = payload.without_optimizer_state()
+
+    assert stripped.optimizers == []
+    assert payload.optimizers, "the original payload must not be mutated"
+    # Everything a reader of best.pt could want is still there, by identity —
+    # the point of `replace` is that nothing is copied or dropped by accident.
+    assert stripped.nets["u"]["w"] is payload.nets["u"]["w"]
+    assert stripped.extra_params["nu"] is payload.extra_params["nu"]
+    assert stripped.points["interior"] is payload.points["interior"]
+    assert stripped.sampler_state == {"interior": {"generations": 2}}
+    assert (stripped.step, stripped.seed, stripped.config_hash) == (7, 3, "abc")

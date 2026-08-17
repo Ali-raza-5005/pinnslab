@@ -31,7 +31,7 @@ from __future__ import annotations
 import math
 import os
 import time
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +81,15 @@ class CheckpointPayload:
     timings: dict[str, float] = field(default_factory=dict)
     pinnslab_version: str = pinnslab.__version__
     format_version: int = _FORMAT_VERSION
+
+    def without_optimizer_state(self) -> CheckpointPayload:
+        """The same payload, minus the part only a *resume* needs.
+
+        Weights, RNG, points, sampler state and provenance all stay: what is
+        dropped is the optimizer's moments and L-BFGS's curvature history, which
+        are meaningless without the step they were about to take.
+        """
+        return replace(self, optimizers=[])
 
     def to_dict(self) -> dict[str, Any]:
         """Field-by-field, deliberately **not** ``dataclasses.asdict``.
@@ -229,9 +238,19 @@ class CheckpointManager:
         self._last_save_step = payload.step
 
     def save_best(self, payload: CheckpointPayload) -> None:
+        """``best.pt``, without the optimizer state.
+
+        Nothing resumes from ``best.pt`` — resume is ``last.pt``, by definition,
+        because best-so-far is not a point the run ever continued from. So the
+        optimizer state in it is pure storage: Adam carries two moments per
+        parameter, i.e. roughly two thirds of the file, written every time the
+        metric improves. On a capped Kaggle working directory across a
+        thousand-cell sweep that is the difference between finishing and running
+        out of disk (DESIGN.md §11).
+        """
         if not self.spec.save_best:
             return
-        save_checkpoint(self.best_path, payload)
+        save_checkpoint(self.best_path, payload.without_optimizer_state())
 
     def load_last(
         self, *, allow_config_change: bool = False

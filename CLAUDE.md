@@ -69,7 +69,7 @@ trainer, build, queue), `components.py`, `geometry/adapters.py`,
 Hardened for use 2026-08-17 (**v0.2.0**, see CHANGELOG.md): the sampler seam
 (`geometry/samplers.py`) is wired to the registry, the collocation cloud is
 checkpointed, `scripts/{run,run_sweep,run_search,benchmark_population}.py` and
-`examples/` exist, and CI runs both test commands. 445 tests.
+`examples/` exist, and CI runs both test commands. 449 tests.
 
 Four things to read before touching the relevant area, because each records a
 *measurement* that overrode an earlier design:
@@ -90,7 +90,9 @@ Four things to read before touching the relevant area, because each records a
 **Next: P0 on paper 1 (sampling).** Infrastructure work from here is
 paper-driven — log every core edit a paper task forces in `FRICTION.md`.
 
-Still open before the first real sweep, in TESTS_TODO.md: checkpoint retention.
-The `resample_every`-plus-resume gap is **fixed** (2026-08-17) — the cloud and
-the sampler's `state_dict` are checkpointed, the queue's refusal is gone, and
-`tests/unit/test_resampling.py` pins bit-exact resume for an adaptive sampler.
+Both items that were open before the first real sweep are **fixed** (2026-08-17):
+the `resample_every`-plus-resume gap (the cloud and the sampler's `state_dict`
+are checkpointed, the queue's refusal is gone, and `tests/unit/test_resampling.py`
+pins bit-exact resume for an adaptive sampler), and checkpoint retention
+(`best.pt` no longer carries optimizer state — nothing resumes from it, and
+Adam's moments were most of the file).

@@ -39,8 +39,10 @@ phase, days left in timebox. Newest first.
   *script's* directory on `sys.path`, not the cwd) — every documented command
   failed for exactly the person following the README. CI added. Tagged v0.2.0.
 - **Next**: **P0 on paper 1 (sampling)**, on the real viscosity and a real
-  budget. Still open: checkpoint retention, and the GPU speedup measurement
-  (`scripts/benchmark_population.py` is ready and waiting for hardware).
+  budget. Also closed checkpoint retention: `best.pt` drops the optimizer
+  state, which nothing resumes from and which is most of the file. Still open:
+  the GPU speedup measurement (`scripts/benchmark_population.py` is ready and
+  waiting for hardware).
 - **Phase**: bootstrap complete, infrastructure hardened. Paper 1 timebox not
   yet started.
 

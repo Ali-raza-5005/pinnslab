@@ -70,16 +70,28 @@ All three are fixed, and the repo is now usable end to end from a clean clone.
   repo would write it. Measured runtimes and results in `examples/README.md`.
 - CI (`.github/workflows/tests.yml`): ruff plus both test commands on push and
   PR, on the declared minimum Python (3.11).
+- `time_to_target_resolution_steps` on every row that records a target.
 
 ### Changed
 
 - `README.md` rewritten: it claimed only step 1 of the bootstrap existed.
 - `run_cell` / `run_queue` lost the `allow_resampling` parameter.
 - `pinnslab.training.build.POINTS` is gone; use `state.points`.
+- **Time-to-target is measured every step** when the metric is one the step
+  already paid for (`loss`, `residual/<name>`), instead of on the trace
+  schedule. It was a reviewer-facing compute-parity number that depended on
+  `logging.trace` — a field deliberately excluded from the config hash — so two
+  runs of one condition could report different times for identical training. An
+  `eval_fn`-derived target (`rel_l2`) stays on the schedule and now records the
+  resolution it was observed at (DESIGN.md §11).
+- **`best.pt` no longer carries optimizer state.** Nothing resumes from it —
+  resume is `last.pt` by definition — and Adam's two moments per parameter were
+  most of the file, rewritten on every improvement. `last.pt` is unchanged and
+  stays resumable.
 
 ### Tests
 
-401 -> 445. New: `test_resampling.py` (the sampler seam and bit-exact resume for
+401 -> 449. New: `test_resampling.py` (the sampler seam and bit-exact resume for
 a plain and an adaptive sampler), `test_examples.py`, `test_scripts.py`,
 `test_plugins.py`, wall-clock band cases in `test_viz.py`, and search-spec
 loading in `test_search.py`. The SIGKILL sweep test now kills the *resampling*

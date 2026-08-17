@@ -124,7 +124,7 @@ in `CLAUDE.md` are binding — in particular:
 The bootstrap (DESIGN.md §9, steps 1–5) is complete: `utils/`, `registry/`,
 `training/`, `geometry/`, `models/`, `physics/`, `losses/`, `eval/`,
 `benchmarks/`, `viz/`, `search/`, the Kaggle runner, the scripts and the
-examples. 445 tests, and `CHANGELOG.md` records what each tag changed.
+examples. 449 tests, and `CHANGELOG.md` records what each tag changed.
 
 Next is P0 on paper 1 (sampling). Infrastructure work from here is
 paper-driven.
