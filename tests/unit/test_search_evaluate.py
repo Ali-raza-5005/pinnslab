@@ -140,7 +140,7 @@ def test_batched_and_sequential_agree_on_the_training_objective():
 
 def _objective_the_slow_way(cfg: RunConfig) -> float:
     """The same loss through the single-run assembly, one candidate at a time."""
-    from pinnslab.training.build import POINTS, assemble
+    from pinnslab.training.build import assemble
     from pinnslab.utils.device import configure_runtime
 
     ctx = configure_runtime(cfg)
@@ -152,6 +152,7 @@ def _objective_the_slow_way(cfg: RunConfig) -> float:
             self.extra_params = part.extra_params
             self.generator = torch.Generator().manual_seed(cfg.seed)
             self.dtype, self.device = ctx.dtype, ctx.device
+            self.points: dict = {}
             self.scratch: dict = {}
             self.step = 0
 
@@ -161,7 +162,6 @@ def _objective_the_slow_way(cfg: RunConfig) -> float:
     # The batched path concatenates every term's per-point residuals and takes
     # one mean of squares, which is exactly the `mean` weighting.
     stacked = torch.cat([residuals[name] for name in sorted(residuals)])
-    del POINTS
     return float((stacked**2).mean().detach())
 
 

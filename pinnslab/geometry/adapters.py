@@ -67,6 +67,11 @@ _STRATEGIES: dict[str, str] = {
     "sobol": "Sobol",
 }
 
+#: The geometric draws this seam offers, as a public set: ``samplers.py``
+#: registers one built-in sampler per name, and a config's ``strategy:`` is
+#: validated against the registry rather than against this dict directly.
+GEOMETRY_STRATEGIES = frozenset(_STRATEGIES)
+
 #: Strategies that produce a fixed sequence for a given ``n``, ignoring any RNG.
 #: Resampling with one of these returns *the same points every time*, which
 #: makes ``StageSpec.resample_every`` a silent no-op — a trap worth naming,
@@ -250,6 +255,7 @@ def with_time(space: Domain, t0: float, t1: float) -> Domain:
 
 __all__ = [
     "DETERMINISTIC_STRATEGIES",
+    "GEOMETRY_STRATEGIES",
     "Domain",
     "Region",
     "interval",

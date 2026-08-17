@@ -81,8 +81,7 @@ Three things to read before touching the relevant area, because each records a
 **Next: P0 on paper 1 (sampling).** Infrastructure work from here is
 paper-driven — log every core edit a paper task forces in `FRICTION.md`.
 
-Before the first real sweep, in TESTS_TODO.md: checkpoint retention, and the
-`resample_every`-plus-resume gap (collocation points are not checkpointed, so an
-interrupted resampling run resumes on the wrong cloud). The second is now
-*guarded* — `run_queue` refuses `resample_every` on a checkpointed run — but not
-fixed, and it lands directly on paper 1.
+Still open before the first real sweep, in TESTS_TODO.md: checkpoint retention.
+The `resample_every`-plus-resume gap is **fixed** (2026-08-17) — the cloud and
+the sampler's `state_dict` are checkpointed, the queue's refusal is gone, and
+`tests/unit/test_resampling.py` pins bit-exact resume for an adaptive sampler.

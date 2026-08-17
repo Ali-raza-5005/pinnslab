@@ -24,7 +24,6 @@ from pinnslab.training.queue import (
     CellStatus,
     config_for,
     load_matrix,
-    run_cell,
     run_id_for,
     run_queue,
     select,
@@ -324,38 +323,31 @@ def test_a_failed_cell_is_still_claimable_next_session(tmp_path):
     assert select(cells, root) == cells
 
 
-# -- the resampling guard ------------------------------------------------------
+# -- resampling ----------------------------------------------------------------
 
 
-def test_resampling_plus_checkpointing_is_refused(tmp_path):
-    """Collocation points are not checkpointed, so a resumed run of such a
-    config silently trains on the initial cloud. The queue is the machinery
-    that makes runs interruptible, so it is where this must be loud."""
-    cell = Cell(config=RESAMPLED, seed=0)
-    with pytest.raises(ValueError, match="resample_every"):
-        run_cell(cell, tmp_path)
+def test_a_resampling_cell_runs_through_the_queue(tmp_path):
+    """The queue used to refuse this config outright: collocation points were
+    not checkpointed, so a resumed resampling run silently continued on the
+    initial cloud. They are checkpointed now (see
+    ``tests/unit/test_resampling.py``), and paper 1's whole subject is
+    resampling, so the sweep machinery has to accept it."""
+    report = run_queue([Cell(config=RESAMPLED, seed=0)], tmp_path)
 
-
-def test_the_guard_fires_before_any_cell_trains(tmp_path):
-    """Checked up front, not when the bad cell is reached: discovering it two
-    hours into a Kaggle session has already cost the session."""
-    csv = write_matrix(
-        tmp_path / "run_matrix.csv", [(str(TINY), 0), (str(RESAMPLED), 0)]
-    )
-    root = tmp_path / "results"
-
-    with pytest.raises(ValueError, match="resample_every"):
-        run_queue(load_matrix(csv), root)
-
-    assert not root.exists() or list(root.iterdir()) == []
-
-
-def test_the_guard_can_be_waived_explicitly(tmp_path):
-    """An uninterruptible run is a legitimate case; it just has to be said."""
-    report = run_queue(
-        [Cell(config=RESAMPLED, seed=0)], tmp_path, allow_resampling=True
-    )
     assert len(report.completed) == 1
+    assert report.completed[0].status.value == "completed"
+
+
+def test_a_resampling_cell_is_resumable_like_any_other(tmp_path):
+    """Status is derived from the directory, and a resampling run is no longer
+    a special case anywhere in that path."""
+    cell = Cell(config=RESAMPLED, seed=0)
+    run_id = run_id_for(config_for(cell))
+
+    assert status_of(tmp_path, run_id) is CellStatus.PENDING
+    run_queue([cell], tmp_path)
+    assert status_of(tmp_path, run_id) is CellStatus.DONE
+    assert select([cell], tmp_path) == []
 
 
 # -- the deadline --------------------------------------------------------------

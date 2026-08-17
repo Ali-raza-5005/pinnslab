@@ -190,20 +190,6 @@ left:
       whether the schedule-dependent bias is acceptable, and pin whichever way
       in a test.
 
-- [ ] **Collocation points do not survive a resume, and `resample_every` makes
-      that visible.** `TrainState.scratch` is deliberately not checkpointed, and
-      `build_trainer` draws the first cloud before `fit()`, which is why a
-      *fixed-point* run resumes exactly (the draw happens from the generator's
-      initial state, which `_restore` then overwrites). With
-      `resample_every=K`, a run killed at a step that is not a multiple of K
-      resumes holding the **initial** cloud rather than the k-th one, and
-      trains on it until the next multiple of K. Invisible in the metrics, and
-      it lands directly on paper 1, whose subject is sampling. Fixing it means
-      deciding what sampler state is checkpointed — the same decision as
-      DESIGN.md §6's outer-loop checkpointing — so it wants a design call, not
-      a patch. Until then, do not combine `resample_every` with runs that can
-      be interrupted.
-
 - [ ] **`geometry.Domain.sample` has no test that points *cover* the domain.**
       `test_interior_points_lie_within_the_domain` only checks the bounding
       box, which a sampler that returned 2540 copies of one corner would also

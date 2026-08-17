@@ -1,7 +1,11 @@
-# burgers_tiny with resampling turned on. Exists only to trip the guard in
-# pinnslab.training.queue._check_resampling — collocation points are not
-# checkpointed, so a resumed run of this config would silently continue on the
-# initial point cloud. Never trained by any test.
+# burgers_tiny with resampling turned on.
+#
+# It used to exist only to trip a guard: collocation points were not
+# checkpointed, so a resumed run of this config silently continued on the
+# initial cloud, and the queue refused the combination outright. The points and
+# the sampler's own state are checkpointed now, so this config is *trained* by
+# the queue tests — resampling is paper 1's subject and must be an ordinary
+# sweep cell, not a special case.
 name: queue-fixture-burgers-tiny-resampled
 seed: 0
 dtype: float64

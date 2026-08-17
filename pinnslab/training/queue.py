@@ -224,9 +224,7 @@ def select(
     return [cell for _, cell in sorted(outstanding, key=lambda pair: pair[0])]
 
 
-def run_cell(
-    cell: Cell, root: str | Path, *, allow_resampling: bool = False
-) -> ResultRow:
+def run_cell(cell: Cell, root: str | Path) -> ResultRow:
     """Train one cell to completion, starting it or resuming it as required.
 
     Idempotent by construction: the run id is derived, so a second call on a
@@ -234,8 +232,6 @@ def run_cell(
     interrupted one continues it from ``last.pt``.
     """
     cfg = config_for(cell)
-    _check_resampling(cfg, cell, allow_resampling=allow_resampling)
-
     run_id = run_id_for(cfg)
     # configure_runtime first, always: it sets the seed and the default dtype,
     # and both must be in force before build_trainer allocates a parameter.
@@ -271,7 +267,6 @@ def run_queue(
     worker: int = 0,
     workers: int = 1,
     deadline_seconds: float | None = None,
-    allow_resampling: bool = False,
 ) -> QueueReport:
     """Work through this worker's cells until they run out or time does.
 
@@ -293,10 +288,10 @@ def run_queue(
     report = QueueReport()
 
     outstanding = select(cells, root, worker=worker, workers=workers)
+    # Load and validate every config before the first cell trains: a typo'd
+    # YAML key that surfaces two hours into a session has cost two hours.
     for cell in outstanding:
-        _check_resampling(
-            config_for(cell), cell, allow_resampling=allow_resampling
-        )
+        config_for(cell)
     log.info(
         "worker %d/%d: %d outstanding cell(s) of %d in the matrix",
         worker,
@@ -324,9 +319,7 @@ def run_queue(
 
         cell_started = time.monotonic()
         try:
-            report.completed.append(
-                run_cell(cell, root, allow_resampling=allow_resampling)
-            )
+            report.completed.append(run_cell(cell, root))
         except Exception as exc:  # noqa: BLE001 - one bad cell must not end the sweep
             log.exception("cell %s seed=%d failed", cell.config.name, cell.seed)
             report.failed.append((cell, f"{type(exc).__name__}: {exc}"))
@@ -341,32 +334,6 @@ def statuses(
 ) -> list[tuple[Cell, CellStatus]]:
     """The whole matrix's derived status. For humans and for `analysis/`."""
     return [(cell, status_of(root, run_id_for(config_for(cell)))) for cell in cells]
-
-
-def _check_resampling(
-    cfg: RunConfig, cell: Cell, *, allow_resampling: bool
-) -> None:
-    """Refuse the one combination known to corrupt a resumed run silently.
-
-    ``TrainState.scratch`` is not checkpointed, so a run killed at a step that
-    is not a multiple of ``resample_every`` resumes holding the *initial* point
-    cloud rather than the one it was training on. Nothing in the metrics shows
-    it. The queue is precisely the machinery that makes runs interruptible, so
-    this is where that would first bite — and it would bite paper 1, whose
-    subject is sampling. Loud beats silent until the sampler-state design
-    question in TESTS_TODO.md is settled.
-    """
-    if allow_resampling or not cfg.checkpoint.save_last:
-        return
-    stages = [s.name for s in cfg.stages if s.resample_every is not None]
-    if stages:
-        raise ValueError(
-            f"{cell.config.name} sets resample_every on stage(s) {stages} and is "
-            "checkpointed, but collocation points are not checkpointed: a "
-            "resumed run would silently continue on the initial point cloud "
-            "(see TESTS_TODO.md, training/trainer). Pass allow_resampling=True "
-            "only if this run will not be interrupted."
-        )
 
 
 __all__ = [

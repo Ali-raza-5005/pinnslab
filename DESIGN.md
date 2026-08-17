@@ -200,6 +200,19 @@ The `@register_*` decorators live in **`pinnslab/components.py`**, NOT in
 is *run provenance* (Run object, config hashing, results schema). Separate
 modules, no shared meaning.
 
+**A registry nobody reads is not an extension point** (learned 2026-08-17).
+`SAMPLERS` existed from the start and nothing consulted it: `build.py` passed a
+config's `strategy:` straight to DeepXDE, so the five geometric draws worked and
+the *one* axis this whole research program is about — adaptive sampling — could
+not be added without editing core. `geometry/samplers.py` now owns the lookup
+(`build_sampler(spec, problem)`), one built-in registration per geometric
+strategy, and a sampler is called `sampler(state, current)`: the same
+`(state, points)` shape as a residual term, so there is one convention to learn.
+Everything an adaptive sampler needs — the networks, the step, the cloud it is
+replacing, the trainer's generator — is already on `TrainState`; no second
+abstraction was added, and none is needed. Worked example:
+`examples/rad_sampler.py`.
+
 ### What the config hash covers (decided 2026-07-31)
 `RunConfig.identity_hash()` hashes the condition, not the invocation. It
 **excludes** `seed`, `device`, `name`, `tags`, `logging`, `checkpoint`:
@@ -411,11 +424,23 @@ tested against, and the only path that can score against a reference solution.
   is **bit-identical** to an uninterrupted one. A queue that silently restarted
   the interrupted cell would pass every weaker test.
 
-  **Known gap, guarded rather than fixed**: collocation points are not
-  checkpointed, so a run with `resample_every` set resumes on the initial point
-  cloud. `run_queue` refuses that combination outright (`allow_resampling=True`
-  to waive) until the sampler-state question — the same decision as §6's
-  outer-loop checkpointing — is settled.
+  **Resolved 2026-08-17** (was: "known gap, guarded rather than fixed"). The
+  collocation cloud and the sampler's own `state_dict` are part of the
+  checkpoint payload (format version 2), so a run with `resample_every` set
+  resumes on the cloud it was training on. The queue's refusal of that
+  combination, and its `allow_resampling` waiver, are gone.
+
+  The decision the gap was waiting on: **the cloud is stored, not replayed.**
+  Replaying it from the RNG stream works only while sampling is a pure function
+  of that stream — the moment a sampler reads the network (which is the whole
+  of paper 1), the cloud in force at step *k* depends on a network that no
+  longer exists after the resume, and the only cheap correct record of it is
+  the cloud itself. Cost: one `(N, d)` tensor per point group per checkpoint,
+  which is small beside Adam's two moments per parameter.
+
+  Pinned by `tests/unit/test_resampling.py` (in-process, both a plain and an
+  adaptive sampler) and by the SIGKILL test above, whose killed cell is now the
+  resampling one, killed *between* resamples.
 
 ---
 

@@ -39,16 +39,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
 WORKER = FIXTURES / "queue_worker.py"
 TINY = FIXTURES / "configs" / "burgers_tiny.yaml"
+RESAMPLED = FIXTURES / "configs" / "burgers_tiny_resampled.yaml"
 
-#: burgers_tiny runs 60 Adam steps and checkpoints every 10, so a kill here
-#: lands mid-stage with a real checkpoint (step 30) behind it — not on a
-#: boundary, which is the case that would pass by accident.
+#: Both configs run 60 Adam steps and checkpoint every 10, so a kill here lands
+#: mid-stage with a real checkpoint (step 30) behind it — not on a boundary,
+#: which is the case that would pass by accident.
+#:
+#: 35 is also, deliberately, *between* resamples for the resampling cell
+#: (``resample_every: 20``, so the cloud in force was drawn at step 20 and the
+#: next draw is at 40). A resumed run that redrew its points instead of
+#: restoring them would diverge from the reference here and nowhere else.
 KILL_STEP = 35
+
+#: The cell that gets killed is the resampling one. Sampling is paper 1's
+#: subject and the point cloud is the newest thing in the checkpoint, so it is
+#: the cell whose bit-exact resume is worth spending the SIGKILL on.
+MATRIX = ((TINY, 0), (RESAMPLED, 1), (TINY, 2))
 
 
 def write_matrix(path: Path) -> Path:
-    """Three seeds of one condition, the shape of a real sweep."""
-    rows = "\n".join(f"{TINY.as_posix()},{seed}," for seed in (0, 1, 2))
+    """A small sweep of the shape a real one has: several cells, mixed configs."""
+    rows = "\n".join(f"{config.as_posix()},{seed}," for config, seed in MATRIX)
     path.write_text(f"config,seed,notes\n{rows}\n", encoding="utf-8")
     return path
 

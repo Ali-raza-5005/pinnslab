@@ -13,7 +13,7 @@ The load-bearing contract (DESIGN.md §4):
 * optimizers are a **list** with a parameter selector and a direction, so
   min-max and self-adaptive schemes are expressible without touching this file.
 * ``residual_fn`` must be a deterministic function of ``state`` within a single
-  step: read collocation points from ``state.scratch`` (populated by
+  step: read collocation points from ``state.points`` (populated by
   ``on_resample``) rather than drawing fresh samples inline. L-BFGS's closure
   can be invoked more than once per ``.step()`` (line search), and a stochastic
   closure breaks the line search's assumptions.
@@ -69,9 +69,21 @@ class TrainState:
     stage_index: int = 0
     stage_name: str = ""
     step_in_stage: int = 0
-    #: Free-form scratch space for hooks (current collocation points, sampler
-    #: state, ...). Not checkpointed — anything that must survive a resume
-    #: belongs in ``extra_params`` or is recomputed from ``generator``.
+    #: The collocation points the loss is currently evaluated on, by point-group
+    #: name. Written by ``on_resample``, read by ``residual_fn`` — and
+    #: **checkpointed**, which is why it is a field of its own rather than a
+    #: ``scratch`` key.
+    #:
+    #: It has to be. With ``resample_every`` set, the cloud in force at step *k*
+    #: is not recoverable from the RNG stream alone once a sampler is adaptive:
+    #: it was drawn against the network as it stood at the last resample, and
+    #: that network no longer exists after a resume. A run that resumed onto a
+    #: freshly drawn cloud would be a different experiment wearing the same
+    #: ``run_id``, and nothing in its metrics would say so.
+    points: dict[str, torch.Tensor] = field(default_factory=dict)
+    #: Free-form scratch space for hooks. **Not** checkpointed: anything that
+    #: must survive a resume belongs in ``points``, in ``extra_params``, or in
+    #: the resample hook's own ``state_dict`` (see ``geometry/samplers.py``).
     scratch: dict[str, Any] = field(default_factory=dict)
 
 
@@ -426,6 +438,8 @@ class Trainer:
         rng = capture_rng_state()
         rng["trainer_generator"] = self.generator.get_state()
         return CheckpointPayload(
+            points={k: v.detach().clone() for k, v in self.state.points.items()},
+            sampler_state=_hook_state(self.on_resample),
             step=step,
             stage_index=stage_index,
             steps_in_stage=steps_in_stage,
@@ -468,6 +482,20 @@ class Trainer:
                 tensor.copy_(payload.extra_params[key])
         restore_rng_state(payload.rng)
         self.generator.set_state(payload.rng["trainer_generator"])
+
+        # The cloud and the sampler's own state, both drawn *before* the step
+        # this checkpoint records. Restoring them is what makes a resumed
+        # resampling run continue the same experiment rather than start a new
+        # one on a fresh cloud: `build_trainer` has already drawn an initial
+        # cloud by now, and this overwrites it, exactly as it overwrites the
+        # RNG stream that produced it.
+        if payload.points:
+            self.state.points = {
+                name: tensor.to(device=self.ctx.device, dtype=self.ctx.dtype)
+                for name, tensor in payload.points.items()
+            }
+        if payload.sampler_state and hasattr(self.on_resample, "load_state_dict"):
+            self.on_resample.load_state_dict(payload.sampler_state)
 
         self._elapsed = payload.elapsed
         self._best_value = payload.best_value
@@ -532,6 +560,18 @@ class _OptimizerGroup:
     spec: OptimizerSpec
     params: list[torch.Tensor]
     optimizer: torch.optim.Optimizer
+
+
+def _hook_state(hook: HookFn | None) -> dict[str, Any]:
+    """What a resample hook wants carried across a session, if anything.
+
+    Duck-typed on purpose: ``on_resample`` is a plain callable in the escape
+    hatch of DESIGN.md §4, and requiring every caller to subclass something to
+    pass a lambda would close that hatch. A hook that holds state opts in by
+    growing the two methods.
+    """
+    getter = getattr(hook, "state_dict", None)
+    return dict(getter()) if callable(getter) else {}
 
 
 def _uses_lbfgs(groups: list[_OptimizerGroup]) -> bool:

@@ -46,7 +46,7 @@ from pinnslab.registry.run import Run
 from pinnslab.registry.schema import RunStatus
 from pinnslab.search.population import Ensemble, train_population
 from pinnslab.search.spec import FitnessSpec
-from pinnslab.training.build import POINTS, assemble, build_trainer
+from pinnslab.training.build import assemble, build_trainer
 from pinnslab.utils.device import RuntimeContext, configure_runtime
 from pinnslab.utils.logging import get_logger
 
@@ -158,6 +158,7 @@ class _EnsembleState:
         self.generator = generator
         self.dtype = dtype
         self.device = device
+        self.points: dict = {}
         self.scratch: dict = {}
         self.step = 0
 
@@ -177,7 +178,7 @@ def _stack_points(
             {}, {}, torch.Generator().manual_seed(cfg.seed), ctx.dtype, ctx.device
         )
         part.on_resample(state)
-        groups = state.scratch[POINTS]
+        groups = state.points
         names = sorted(groups)
         layouts.append(tuple((name, len(groups[name])) for name in names))
         clouds.append(torch.cat([groups[name] for name in names], dim=0))

@@ -45,7 +45,11 @@ log = get_logger(__name__)
 
 LAST_NAME = "last.pt"
 BEST_NAME = "best.pt"
-_FORMAT_VERSION = 1
+#: 2 (2026-08-17): the payload gained ``points`` and ``sampler_state``. Version 1
+#: checkpoints are refused rather than loaded with an empty cloud, because a
+#: resampling run resumed without its cloud is the exact silent-wrong-experiment
+#: this field exists to prevent.
+_FORMAT_VERSION = 2
 
 
 @dataclass
@@ -62,6 +66,15 @@ class CheckpointPayload:
     elapsed: float
     config_hash: str
     seed: int
+    #: The collocation cloud in force at ``step``, by group name. Empty for a
+    #: run whose points never move — drawing them once from a checkpointed RNG
+    #: stream reproduces them exactly — and populated for every run that
+    #: resamples, where nothing else can reproduce them (see
+    #: :class:`~pinnslab.training.trainer.TrainState.points`).
+    points: dict[str, torch.Tensor] = field(default_factory=dict)
+    #: Whatever the resample hook reports through its own ``state_dict``:
+    #: counters, residual EMAs, a growing pool. Empty for stateless samplers.
+    sampler_state: dict[str, Any] = field(default_factory=dict)
     best_value: float | None = None
     best_metrics: dict[str, float] = field(default_factory=dict)
     best_step: int | None = None

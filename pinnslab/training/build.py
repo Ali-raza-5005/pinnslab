@@ -14,6 +14,7 @@ A Kaggle notebook is then the ~20 lines of DESIGN.md §7: load a config, call
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 from torch import nn
@@ -23,6 +24,7 @@ import pinnslab.losses  # noqa: F401  (registers the built-in weightings)
 from pinnslab.benchmarks.problem import Problem, ResidualTerm, build_problem
 from pinnslab.components import RESIDUALS, WEIGHTINGS
 from pinnslab.eval.metrics import max_error, relative_l2, uniform_grid
+from pinnslab.geometry.samplers import Sampler, build_sampler
 from pinnslab.models.mlp import build_net
 from pinnslab.registry.config import RunConfig
 from pinnslab.registry.run import Run
@@ -39,9 +41,9 @@ from pinnslab.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-#: Where collocation points live between the resample hook and the residual
-#: function. Keyed by point-group name.
-POINTS = "points"
+# Collocation points used to live in `state.scratch["points"]`. They are now a
+# field of their own, `TrainState.points`, because they are checkpointed and
+# `scratch` explicitly is not.
 
 
 @dataclass
@@ -162,17 +164,17 @@ def _build_weighting(cfg: RunConfig) -> WeightingFn:
 def _make_residual_fn(cfg: RunConfig, terms: dict[str, ResidualTerm]):
     """Evaluate every declared term on its own point group.
 
-    Reads points from ``state.scratch`` rather than drawing them, because
+    Reads points from ``state.points`` rather than drawing them, because
     L-BFGS's line search can invoke the closure more than once per step and a
     residual that resampled itself would move the objective underneath it.
     """
     groups = {name: spec.points for name, spec in cfg.residuals.items()}
 
     def residual_fn(state: TrainState) -> dict[str, torch.Tensor]:
-        points = state.scratch.get(POINTS)
+        points = state.points
         if not points:
             raise RuntimeError(
-                "no collocation points in state.scratch; build the trainer with "
+                "no collocation points in state.points; build the trainer with "
                 "build_trainer(), which draws the first cloud before training"
             )
         return {
@@ -195,24 +197,60 @@ def _gather(
     return torch.cat([points[name] for name in names], dim=0)
 
 
-def _make_resampler(cfg: RunConfig, problem: Problem, ctx: RuntimeContext):
-    """Draw every declared point group from the trainer's own RNG stream."""
-    specs = cfg.sampling.points
+class Resampler:
+    """The resample hook: one registered :class:`Sampler` per declared group.
 
-    def on_resample(state: TrainState) -> None:
-        state.scratch[POINTS] = {
-            name: problem.domain.sample(
-                spec.region,
-                spec.n,
-                generator=state.generator,
-                strategy=spec.strategy,
-                dtype=ctx.dtype,
-                device=ctx.device,
-            )
-            for name, spec in specs.items()
+    An object rather than a closure for one reason — a sampler may carry state
+    (an adaptive one usually does), and the trainer checkpoints that state
+    through ``state_dict``/``load_state_dict`` here. A run that resumed with its
+    adaptive sampler reset to generation zero would continue a different
+    experiment under the same ``run_id``.
+
+    Every sampler sees the cloud its group is currently holding (``None`` on the
+    first draw), and the whole new cloud is installed only once every group has
+    drawn — so two adaptive groups in one config cannot see a half-updated
+    state and become order-dependent.
+    """
+
+    def __init__(self, samplers: dict[str, Sampler]) -> None:
+        self.samplers = samplers
+
+    def __call__(self, state: TrainState) -> None:
+        drawn = {
+            name: sampler(state, state.points.get(name))
+            for name, sampler in self.samplers.items()
         }
+        state.points = drawn
 
-    return on_resample
+    def state_dict(self) -> dict[str, Any]:
+        return {name: s.state_dict() for name, s in self.samplers.items()}
+
+    def load_state_dict(self, payload: dict[str, Any]) -> None:
+        unknown = sorted(set(payload) - set(self.samplers))
+        if unknown:
+            raise ValueError(
+                f"the checkpoint carries sampler state for point group(s) "
+                f"{unknown}, which this config does not declare; sampling "
+                "changed under the checkpoint"
+            )
+        for name, sampler in self.samplers.items():
+            if name in payload:
+                sampler.load_state_dict(payload[name])
+
+
+def _make_resampler(cfg: RunConfig, problem: Problem, ctx: RuntimeContext) -> Resampler:
+    """Build the sampler each point group named (CLAUDE.md rule 9).
+
+    ``ctx`` is not consulted: a sampler takes dtype and device from the
+    ``TrainState`` it is called with, which is the same thing and is the only
+    one available to a sampler written in a paper repo.
+    """
+    return Resampler(
+        {
+            name: build_sampler(spec, problem)
+            for name, spec in cfg.sampling.points.items()
+        }
+    )
 
 
 def _make_eval_fn(problem: Problem, ctx: RuntimeContext) -> EvalFn | None:
@@ -246,4 +284,4 @@ def _make_eval_fn(problem: Problem, ctx: RuntimeContext) -> EvalFn | None:
     return eval_fn
 
 
-__all__ = ["POINTS", "Assembly", "assemble", "build_trainer"]
+__all__ = ["Assembly", "Resampler", "assemble", "build_trainer"]

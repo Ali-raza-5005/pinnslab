@@ -28,7 +28,7 @@ from pinnslab.registry.config import (
 )
 from pinnslab.registry.run import Run
 from pinnslab.registry.schema import MetricSchedule
-from pinnslab.training.build import POINTS, _gather, assemble, build_trainer
+from pinnslab.training.build import _gather, assemble, build_trainer
 from pinnslab.utils.device import configure_runtime
 
 pytestmark = pytest.mark.unit
@@ -101,11 +101,11 @@ def test_nets_take_the_configs_dtype_and_device(built):
 def test_the_first_point_cloud_is_drawn_before_training(built):
     """The trainer only fires ``on_resample`` when a stage sets
     ``resample_every``; with fixed points it would never fire and the first
-    residual evaluation would find an empty scratch."""
+    residual evaluation would find no points."""
     cfg, ctx, run = built
     trainer = build_trainer(cfg, ctx, run)
 
-    points = trainer.state.scratch[POINTS]
+    points = trainer.state.points
     assert set(points) == {"interior", "initial", "boundary"}
     assert points["interior"].shape == (64, 2)
     assert points["initial"].shape == (16, 2)
@@ -129,7 +129,7 @@ def test_a_multi_group_residual_concatenates_in_declared_order(built):
     weighting still sees a single population (CLAUDE.md rule 5)."""
     cfg, ctx, run = built
     trainer = build_trainer(cfg, ctx, run)
-    points = trainer.state.scratch[POINTS]
+    points = trainer.state.points
 
     gathered = _gather(points, ("interior", "initial", "boundary"))
 
@@ -205,7 +205,7 @@ def test_one_seed_gives_one_point_cloud(results_root):
     for run_id in ("a", "b"):
         ctx = configure_runtime(cfg)
         trainer = build_trainer(cfg, ctx, Run.create(cfg, results_root, run_id=run_id))
-        clouds.append(trainer.state.scratch[POINTS]["interior"])
+        clouds.append(trainer.state.points["interior"])
 
     assert torch.equal(*clouds)
 
@@ -216,7 +216,7 @@ def test_different_seeds_give_different_point_clouds(results_root):
         cfg = burgers_config(seed=seed)
         ctx = configure_runtime(cfg)
         trainer = build_trainer(cfg, ctx, Run.create(cfg, results_root, run_id=run_id))
-        clouds.append(trainer.state.scratch[POINTS]["interior"])
+        clouds.append(trainer.state.points["interior"])
 
     assert not torch.equal(*clouds)
 
@@ -259,10 +259,10 @@ def test_an_unknown_problem_lists_the_registered_ones(built):
 
 def test_training_without_the_builder_says_what_to_do(built):
     """Constructing a Trainer directly with a config-driven residual function
-    leaves scratch empty; the error has to name the fix."""
+    leaves `state.points` empty; the error has to name the fix."""
     cfg, ctx, run = built
     trainer = build_trainer(cfg, ctx, run)
-    trainer.state.scratch.clear()
+    trainer.state.points.clear()
 
     with pytest.raises(RuntimeError, match="build_trainer"):
         trainer.residual_fn(trainer.state)
