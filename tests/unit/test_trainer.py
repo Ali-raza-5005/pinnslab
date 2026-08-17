@@ -308,6 +308,64 @@ def test_time_to_target_is_recorded_in_steps_and_seconds(results_root):
     assert row.timings["time_to_target_steps"] > 0
     assert row.timings["time_to_target_seconds"] >= 0
     assert row.timings["train_seconds"] > 0
+    assert row.timings["time_to_target_resolution_steps"] == 1.0
+
+
+def test_a_cheap_target_is_measured_every_step_not_on_the_trace_schedule(results_root):
+    """"Steps to target" is a compute-parity number a reviewer will read, and
+    `logging` is excluded from the config hash — so if it were quantised to the
+    trace cadence, two runs of the *same condition* tracing at different
+    densities would report different times for identical training.
+
+    ``loss`` costs nothing extra: the step already computed it.
+    """
+    def run(every: int):
+        cfg = toy_config(
+            stages=[
+                StageSpec(name="adam", steps=300, optimizers=[OptimizerSpec(lr=1e-2)])
+            ],
+            eval=EvalSpec(
+                best_metric="loss",
+                target_metric="loss",
+                target_value=1.0,
+                best_mode="min",
+            ),
+            logging=LoggingSpec(trace=MetricSchedule(every=every)),
+        )
+        # Separate roots: `logging` is excluded from the config hash, so both
+        # runs derive the *same* run id — which is the point being tested.
+        root = results_root / f"every{every}"
+        root.mkdir()
+        return build(cfg, root).fit().timings
+
+    dense, sparse = run(1), run(97)
+
+    assert dense["time_to_target_steps"] == sparse["time_to_target_steps"]
+    assert sparse["time_to_target_resolution_steps"] == 1.0
+
+
+def test_an_eval_derived_target_reports_the_resolution_it_was_observed_at(
+    results_root,
+):
+    """``rel_l2`` costs a forward pass over the whole evaluation grid, which is
+    exactly what the trace schedule exists to avoid paying every step. So that
+    target stays on the schedule — and says so, because an upper bound reported
+    as an exact value is not a compute-parity number."""
+    cfg = toy_config(
+        stages=[StageSpec(name="adam", steps=120, optimizers=[OptimizerSpec(lr=1e-2)])],
+        eval=EvalSpec(
+            best_metric="loss",
+            target_metric="accuracy",
+            target_value=0.0,
+            best_mode="max",
+        ),
+        logging=LoggingSpec(trace=MetricSchedule(every=25)),
+    )
+    trainer = build(cfg, results_root, eval_fn=lambda state: {"accuracy": 1.0})
+    row = trainer.fit()
+
+    assert row.timings["time_to_target_resolution_steps"] == 25.0
+    assert row.timings["time_to_target_steps"] % 25 == 0
 
 
 def test_resample_hook_fires_on_schedule(results_root):

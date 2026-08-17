@@ -177,19 +177,6 @@ instead. Pinned by
 `test_a_crash_before_the_first_step_does_not_duplicate_the_baseline`. What is
 left:
 
-- [ ] **Best-checkpoint tracking and `time_to_target_steps`/
-      `time_to_target_seconds` are only evaluated inside `_record()`, which
-      only runs on the (downsampled) trace schedule — not every step.** For a
-      cheap `target_metric`/`best_metric` like `"loss"` (already computed
-      every step for free), this makes the reported "steps/seconds to target"
-      schedule-dependent rather than exact, which cuts against DESIGN.md
-      §8/§11's framing of it as a reviewer-facing, compute-parity number.
-      Checking it every step is not free in general — an `eval_fn`-derived
-      `best_metric` is exactly what the throttling exists to avoid calling
-      every step — so this needs a decision, not a reflexive fix. Decide
-      whether the schedule-dependent bias is acceptable, and pin whichever way
-      in a test.
-
 - [ ] **`geometry.Domain.sample` has no test that points *cover* the domain.**
       `test_interior_points_lie_within_the_domain` only checks the bounding
       box, which a sampler that returned 2540 copies of one corner would also

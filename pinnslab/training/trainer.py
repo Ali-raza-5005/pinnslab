@@ -291,6 +291,16 @@ class Trainer:
                     )
                     return self._diverged(global_step, stage_index, step_in_stage, loss)
 
+                # A target the step already computed is checked *every* step, not
+                # on the trace schedule: "steps to target" is a reviewer-facing
+                # compute-parity number, and quantising it to the trace cadence
+                # would make it depend on a field that is deliberately excluded
+                # from the config hash. An eval_fn-derived target stays on the
+                # schedule — that is what the schedule is for — and records its
+                # resolution instead.
+                if self._target_is_free_every_step():
+                    self._track_target(global_step, self._step_metrics(float(loss)))
+
                 is_last = (
                     step_in_stage == stage.steps
                     and stage_index == len(self.cfg.stages) - 1
@@ -413,6 +423,36 @@ class Trainer:
             self._best_step = step
             self.checkpoints.save_best(self._payload(step, stage_index, step_in_stage))
 
+    def _target_is_free_every_step(self) -> bool:
+        """Can the target be checked without paying for ``eval_fn``?
+
+        ``loss`` is computed by the step itself, and every ``residual/<name>`` is
+        a mean of squares over a tensor the step already produced. Those cost
+        nothing worth counting. A metric from ``eval_fn`` — ``rel_l2`` is the
+        one that matters — is a forward pass over the whole evaluation grid, and
+        the trace schedule exists precisely to avoid paying it every step.
+        """
+        metric = self.cfg.eval.target_metric
+        return metric == "loss" or (
+            metric is not None and metric.startswith("residual/")
+        )
+
+    def _target_resolution(self) -> float:
+        """The granularity of the recorded time-to-target, in steps.
+
+        Recorded alongside the number itself, because a reader cannot otherwise
+        tell "reached at step 300" from "first *observed* at step 300, having
+        possibly happened at 201". It also guards a comparability trap:
+        ``logging`` is excluded from the config hash (changing trace density
+        does not make it a different experiment), so two runs of one condition
+        may legitimately trace at different cadences — and their time-to-target
+        would then differ for a reason that has nothing to do with training.
+        """
+        if self._target_is_free_every_step():
+            return 1.0
+        schedule = self.cfg.logging.trace
+        return float(schedule.every) if schedule.every else float("nan")
+
     def _track_target(self, step: int, metrics: dict[str, float]) -> None:
         spec = self.cfg.eval
         if spec.target_metric is None or "time_to_target_seconds" in self._timings:
@@ -428,9 +468,20 @@ class Trainer:
         if reached:
             # Time-to-target is reported alongside final accuracy (DESIGN.md §8),
             # in both units, because "steps" and "seconds" answer different
-            # reviewer questions.
+            # reviewer questions — and with the resolution of the observation,
+            # because an upper bound reported as an exact value is not a
+            # compute-parity number.
             self._timings["time_to_target_seconds"] = self._elapsed
             self._timings["time_to_target_steps"] = float(step)
+            self._timings["time_to_target_resolution_steps"] = self._target_resolution()
+
+    def _step_metrics(self, loss: float) -> dict[str, float]:
+        """The metrics the step already paid for. See ``_target_is_free_every_step``."""
+        metrics = {"loss": loss}
+        if self.cfg.eval.target_metric != "loss":
+            for name, value in self._last_residuals.items():
+                metrics[f"residual/{name}"] = float((value.detach() ** 2).mean())
+        return metrics
 
     def _payload(
         self, step: int, stage_index: int, steps_in_stage: int

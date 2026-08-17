@@ -615,7 +615,17 @@ metadata:
 - **inner_train_time** per candidate/run (wall-clock).
 - **loop/generation time** for the search outer loop.
 - **total_search_time** and **total_experiment_time** (cell-level).
-- **time-to-target-accuracy** (steps AND seconds to reach a fixed rel-L2).
+- **time-to-target-accuracy** (steps AND seconds to reach a fixed rel-L2), plus
+  `time_to_target_resolution_steps` — **decided 2026-08-17**. The target was
+  only ever checked on the trace schedule, which made a reviewer-facing number
+  depend on `logging.trace`, a field deliberately *excluded* from the config
+  hash: two runs of one condition tracing at different densities would report
+  different times for identical training. Now a target the step already computed
+  (`loss`, `residual/<name>`) is checked every step and the resolution is 1; an
+  `eval_fn`-derived target (`rel_l2`) stays on the schedule, because paying a
+  full evaluation-grid forward pass per step is exactly what the schedule
+  exists to avoid — and the run records the cadence it was observed at, so an
+  upper bound is never read as an exact value.
 - **FLOPs or step-count** per method, for equal-budget comparison including
   search cost.
 - gpu_name alongside every timing (T4 vs P100 vs Colab timings are NOT
