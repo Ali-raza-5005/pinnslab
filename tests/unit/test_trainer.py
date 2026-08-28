@@ -357,7 +357,11 @@ def test_an_eval_derived_target_reports_the_resolution_it_was_observed_at(
             best_metric="loss",
             target_metric="accuracy",
             target_value=0.0,
-            best_mode="max",
+            # target_mode, not best_mode. This used to say `best_mode="max"`
+            # and lean on the target borrowing it, which is the coupling that
+            # made a run targeting a minimised metric while tracking a
+            # maximised best metric report the target as reached immediately.
+            target_mode="max",
         ),
         logging=LoggingSpec(trace=MetricSchedule(every=25)),
     )
@@ -366,6 +370,34 @@ def test_an_eval_derived_target_reports_the_resolution_it_was_observed_at(
 
     assert row.timings["time_to_target_resolution_steps"] == 25.0
     assert row.timings["time_to_target_steps"] % 25 == 0
+
+
+def test_the_target_direction_is_independent_of_the_best_metrics_direction(
+    results_root,
+):
+    """A config may legitimately keep the *highest* score of one metric while
+    targeting a *low* value of another. The target used to borrow ``best_mode``,
+    so this config recorded ``time_to_target`` at the first trace point — a
+    reviewer-facing compute-parity number, wrong and self-consistent.
+    """
+    cfg = toy_config(
+        stages=[StageSpec(name="adam", steps=60, optimizers=[OptimizerSpec(lr=1e-2)])],
+        eval=EvalSpec(
+            best_metric="score",
+            best_mode="max",          # keep the highest score...
+            target_metric="loss",
+            target_value=1e-12,       # ...but the target is a *low* loss
+            target_mode="min",
+        ),
+        logging=LoggingSpec(trace=MetricSchedule(every=10)),
+    )
+    trainer = build(cfg, results_root, eval_fn=lambda state: {"score": 1.0})
+    row = trainer.fit()
+
+    assert "time_to_target_steps" not in row.timings, (
+        "a target of loss <= 1e-12 was reported as reached; the target read "
+        "best_mode='max' and fired on the first value it saw"
+    )
 
 
 def test_resample_hook_fires_on_schedule(results_root):

@@ -53,7 +53,7 @@ REL_L2_TARGET = 2e-3
 #: The frozen identity of the config above. Not decoration: it is what a result
 #: row joins on, and a silent change to the YAML would otherwise re-target the
 #: threshold at a different experiment.
-CONFIG_HASH = "7fcbc5d458e6e74e"
+CONFIG_HASH = "0ebf401fda6fa1d0"
 
 
 @pytest.fixture(scope="module")

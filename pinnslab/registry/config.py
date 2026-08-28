@@ -224,6 +224,14 @@ class EvalSpec(Spec):
     #: (DESIGN.md §8); set both fields to record it.
     target_metric: str | None = None
     target_value: float | None = None
+    #: Which side of ``target_value`` counts as reached. Separate from
+    #: ``best_mode`` on purpose: the target used to borrow it, so a config that
+    #: tracked a *maximised* best metric while targeting a minimised one
+    #: (``best_metric: conservation, best_mode: max`` with
+    #: ``target_metric: rel_l2``) recorded the target as reached at the first
+    #: trace point, and time-to-target is a reviewer-facing compute-parity
+    #: number. Defaults to ``min`` because every error metric here is minimised.
+    target_mode: Literal["min", "max"] = "min"
     #: A non-finite loss ends the run with status=diverged rather than a
     #: traceback — failure rate is a reported metric (DESIGN.md §11).
     stop_on_nonfinite: bool = True

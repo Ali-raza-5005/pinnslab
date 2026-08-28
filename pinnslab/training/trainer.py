@@ -460,9 +460,13 @@ class Trainer:
         value = metrics.get(spec.target_metric)
         if value is None:
             return
+        # spec.target_mode, not spec.best_mode: the two answer different
+        # questions and a config may legitimately maximise one metric while
+        # targeting another. Borrowing best_mode made the target fire
+        # immediately whenever best_mode was "max".
         reached = (
             value <= spec.target_value
-            if spec.best_mode == "min"
+            if spec.target_mode == "min"
             else value >= spec.target_value
         )
         if reached:
