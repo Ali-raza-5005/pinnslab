@@ -90,7 +90,7 @@ def _row(cfg, ctx, size: int, steps: int) -> str:
     parts = [assemble(cfg, ctx) for _ in range(size)]
     net_name = parts[0].problem.solution_net
     points, offsets = _stack_points(parts, configs, ctx)
-    residual = _population_residual(cfg, net_name, offsets)
+    residual = _population_residual(configs, net_name, offsets, ctx)
     lr = cfg.stages[0].optimizers[0].lr
 
     nets = [part.nets[net_name] for part in parts]
@@ -109,13 +109,22 @@ def _row(cfg, ctx, size: int, steps: int) -> str:
     for net, state in zip(nets, weights, strict=True):
         net.load_state_dict(state)
 
+    # A residual per candidate, not the population's: the per-term scales in
+    # _population_residual are (P, 1), so handing a one-candidate call the
+    # population's residual would broadcast into P rows. Building one each is
+    # also the honest comparison — it is what evaluating a candidate alone
+    # actually costs.
+    singles = [
+        _population_residual([configs[i]], net_name, offsets, ctx)
+        for i in range(len(nets))
+    ]
     separate_seconds, separate = _time(
         lambda: torch.stack(
             [
                 train_population(
                     Ensemble([net]),
                     points[index : index + 1],
-                    residual,
+                    singles[index],
                     steps=steps,
                     lr=lr,
                 ).losses[0]

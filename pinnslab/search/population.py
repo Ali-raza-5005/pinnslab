@@ -84,7 +84,7 @@ class Ensemble(nn.Module):
         self,
         members: Sequence[nn.Module],
         *,
-        activation: Callable[[torch.Tensor], torch.Tensor] = torch.tanh,
+        activation: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
         if not members:
@@ -103,7 +103,17 @@ class Ensemble(nn.Module):
 
         self.size = len(members)
         self.depth = len(layers[0])
-        self.activation = activation
+        # Inferred from the members, never assumed. This used to default to
+        # ``torch.tanh``, so a config declaring ``activation: sin`` was batched
+        # as a tanh network: the search then scored a candidate that its own
+        # config hash did not describe, and a reproduction run through the
+        # single-run path would not match. Measured before the fix: a depth-2
+        # width-8 ``sin`` MLP and its Ensemble disagreed by 7.9e-2 on the same
+        # inputs. An explicit ``activation=`` still wins, for a caller batching
+        # bare modules that carry no activation of their own.
+        self.activation = (
+            activation if activation is not None else _activation_of(members)
+        )
         # The members' own parameter names, so member_state_dict round-trips
         # through load_state_dict. Deriving them from the layer index instead
         # would be wrong for any container that interleaves modules — an
@@ -153,6 +163,67 @@ def _linears(module: nn.Module) -> list[nn.Linear]:
     if not layers:
         raise ValueError(f"{type(module).__name__} has no Linear layers to batch")
     return layers
+
+
+def _activations(module: nn.Module) -> list[nn.Module]:
+    """The module's non-Linear leaf modules, in declaration order.
+
+    Leaves rather than every module, because the containers (``MLP``,
+    ``nn.Sequential``) are not activations. An ``nn.Sequential`` that reuses one
+    activation *instance* between layers yields it once per position, which is
+    what makes the "one activation throughout" check below meaningful.
+    """
+    return [
+        m
+        for m in module.modules()
+        if not isinstance(m, nn.Linear) and not list(m.children())
+    ]
+
+
+def _activation_of(members: Sequence[nn.Module]) -> Callable[..., torch.Tensor]:
+    """The single activation every member shares, as a callable.
+
+    Two refusals rather than a silent substitution, because both would produce
+    a population whose fitness belongs to a network nobody configured:
+
+    * **members that disagree.** Activation search is one of DESIGN.md §6's four
+      directions and it *should* batch (index into a fixed set), but it needs a
+      per-member activation index and a gather that ``Ensemble`` does not have
+      yet. Until it does, a population mixing ``tanh`` and ``sin`` is refused
+      rather than trained as whichever one came first.
+    * **one member mixing activations across its layers.** ``forward`` applies
+      one callable at every hidden layer, so a per-layer network cannot be
+      represented here at all.
+
+    A member with no activation leaf at all (a single ``Linear``) gets the
+    identity, which ``forward`` never reaches: it activates only between layers.
+    """
+    kinds = [{type(a) for a in _activations(m)} for m in members]
+    mixed = [k for k in kinds if len(k) > 1]
+    if mixed:
+        raise ValueError(
+            f"a member uses more than one activation across its layers "
+            f"({sorted(t.__name__ for t in mixed[0])}); Ensemble applies one "
+            "callable at every hidden layer, so it cannot represent that "
+            "network. Use SequentialEvaluator."
+        )
+    distinct = {next(iter(k)) for k in kinds if k}
+    if len(distinct) > 1:
+        raise ValueError(
+            f"the population mixes {len(distinct)} activations "
+            f"({sorted(t.__name__ for t in distinct)}). Batching them would "
+            "silently train every candidate under one of them, so the search "
+            "would score configurations it did not evaluate. Group candidates "
+            "by activation and build one Ensemble per group, or use "
+            "SequentialEvaluator."
+        )
+    if not distinct:
+        return lambda x: x
+    # The member's own module instance: activations here are stateless and
+    # elementwise, so it applies unchanged to (P, N, W). Using the instance
+    # rather than a name -> function table means every registered activation,
+    # including one a paper adds, works with no edit here.
+    return next(a for a in _activations(members[0]))
 
 
 @dataclass

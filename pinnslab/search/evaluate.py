@@ -133,7 +133,7 @@ class BatchedEvaluator:
         net_name = parts[0].problem.solution_net
         ensemble = Ensemble([p.nets[net_name] for p in parts])
         points, offsets = _stack_points(parts, configs, ctx)
-        residual = _population_residual(configs[0], net_name, offsets)
+        residual = _population_residual(configs, net_name, offsets, ctx)
 
         lr = self.lr if self.lr is not None else configs[0].stages[0].optimizers[0].lr
         return train_population(
@@ -209,38 +209,118 @@ def _stack_points(
     return torch.stack(clouds), offsets
 
 
-def _population_residual(cfg: RunConfig, net_name: str, offsets):
-    """Every declared term, on its own point groups, concatenated to ``(P, N)``.
+def _population_residual(
+    configs: Sequence[RunConfig], net_name: str, offsets, ctx: RuntimeContext
+):
+    """Every declared term, on its own point groups, rescaled and concatenated.
 
-    Concatenated rather than weighted because :func:`train_population` takes
-    the mean of squares, which *is* the default ``mean`` weighting. A config
-    asking for NTK, causal or self-adaptive weighting is refused up front by
-    :func:`_reject_unsupported` rather than silently trained under a different
-    objective than it declared.
+    Why the rescaling, and why it is not cosmetic
+    ---------------------------------------------
+    :func:`train_population` reduces with **one pooled mean of squares** over
+    everything the residual returns. ``MeanWeighting`` — the objective the
+    config declares and the single-run path minimises — is
+    ``sum_k coeff_k * mean(r_k ** 2)``: a mean *per term*, then a sum. Those
+    two are equal only when every term has the same point count, which is
+    essentially never. This module previously concatenated the terms raw and
+    asserted in a comment that the pooled mean "*is* the mean weighting"; on
+    ``examples/configs/burgers_uniform.yaml`` (pde on 1150 points, ic on 100,
+    bc on 50) the two objectives differed by 6.3x, and the boundary term was
+    weighted 26x lower in the batched objective than in the one the config
+    asked for. A search run that way optimises something no reproduction run
+    will reproduce.
+
+    The fix keeps the single pooled reduction (so ``train_population``'s
+    contract, and every proof of population independence built on it, is
+    untouched) and puts the weighting into the rows instead. Scaling term ``k``
+    by ``sqrt(coeff_k * N_total / N_k)`` gives
+
+        pooled_mean = (1 / N_total) * sum_k sum_i coeff_k * (N_total / N_k) r_ki^2
+                    = sum_k coeff_k * mean(r_k ** 2)
+
+    which is ``MeanWeighting`` exactly. The scale is per **candidate** as well
+    as per term, so a search over ``weighting.coefficients`` — one of
+    DESIGN.md §6's four directions — batches correctly instead of silently
+    training every candidate under ``configs[0]``'s coefficients.
+
+    A config asking for NTK, causal or self-adaptive weighting is refused up
+    front by :func:`_reject_unsupported` rather than approximated here.
     """
-    problem = build_problem(cfg.problem)
+    problem = build_problem(configs[0].problem)
     built = [
-        (RESIDUALS.get(spec.kind)(spec, problem), spec.points)
-        for spec in cfg.residuals.values()
+        (name, RESIDUALS.get(spec.kind)(spec, problem), spec.points)
+        for name, spec in configs[0].residuals.items()
     ]
+    counts = {
+        name: sum(offsets[g].stop - offsets[g].start for g in groups)
+        for name, _, groups in built
+    }
+    total = sum(counts.values())
+
+    def _scale(name: str, cfg: RunConfig) -> float:
+        coefficient = cfg.weighting.coefficients.get(name, 1.0)
+        if coefficient < 0.0:
+            # The scale is a square root, so a negative coefficient cannot be
+            # folded into the residual rows at all. MeanWeighting accepts one
+            # (it is a plain multiply), so this is a limit of the batched
+            # reduction rather than of the objective — say so instead of
+            # raising a domain error from inside math.sqrt.
+            raise ValueError(
+                f"weighting coefficient for {name!r} is {coefficient}; the "
+                "batched evaluator folds coefficients into the residual as a "
+                "square root and cannot represent a negative one. Use "
+                "SequentialEvaluator."
+            )
+        return math.sqrt(coefficient * total / counts[name])
+
+    # (P, 1) per term, so the multiply broadcasts across that term's points.
+    scales = {
+        name: torch.tensor(
+            [[_scale(name, cfg)] for cfg in configs],
+            dtype=ctx.dtype,
+            device=ctx.device,
+        )
+        for name, _, _ in built
+    }
+
+    population = len(configs)
 
     def residual(ensemble: Ensemble, points: torch.Tensor) -> torch.Tensor:
+        if points.shape[0] != population:
+            # The per-candidate scales are (P, 1) and would broadcast silently
+            # against a (P', N) row, turning a one-candidate call into a P-row
+            # result nobody asked for. Callers evaluating a subset (the
+            # "separate" arm of a speedup benchmark) must build a residual for
+            # exactly the configs they are passing.
+            raise ValueError(
+                f"this residual was built for {population} candidate(s) but "
+                f"got points for {points.shape[0]}. Build one per population "
+                "you actually evaluate: _population_residual(configs[i:i+1], "
+                "...) for a single candidate."
+            )
         state = _EnsembleState(
             {net_name: ensemble}, {}, None, points.dtype, points.device
         )
         rows = []
-        for term, groups in built:
+        for name, term, groups in built:
             selected = torch.cat(
                 [points[:, offsets[g], :] for g in sorted(groups)], dim=1
             )
-            rows.append(term(state, selected))
+            rows.append(term(state, selected) * scales[name])
         return torch.cat(rows, dim=1)
 
     return residual
 
 
 def _reject_unsupported(configs: Sequence[RunConfig]) -> None:
-    """Say what this path cannot do, instead of quietly doing something else."""
+    """Say what this path cannot do, instead of quietly doing something else.
+
+    Everything checked here is a field the batched path reads from
+    ``configs[0]`` and then applies to the whole population. Left unchecked, a
+    search space touching any of them produces the worst failure available: a
+    full set of plausible fitnesses for configurations that were never
+    evaluated, each cached under a ``config_hash`` naming a run that did not
+    happen.
+    """
     first = configs[0]
     if first.weighting.kind != "mean":
         raise ValueError(
@@ -257,8 +337,14 @@ def _reject_unsupported(configs: Sequence[RunConfig]) -> None:
             "(extra_params); those are per-candidate trainable tensors that "
             "would need stacking alongside the network. Use SequentialEvaluator."
         )
+    if any(cfg.weighting.options for cfg in configs):
+        raise ValueError(
+            "the batched evaluator reads only weighting.coefficients; this "
+            f"config also sets options {sorted(first.weighting.options)}, which "
+            "would be recorded and never applied. Use SequentialEvaluator."
+        )
     structures = {
-        tuple(sorted((n, s.kind, s.points) for n, s in cfg.residuals.items()))
+        tuple(sorted((n, s.kind, s.points, s.net) for n, s in cfg.residuals.items()))
         for cfg in configs
     }
     if len(structures) != 1:
@@ -266,6 +352,98 @@ def _reject_unsupported(configs: Sequence[RunConfig]) -> None:
             "every candidate must declare the same residual terms to be batched "
             f"together, got {len(structures)} distinct structures. A search over "
             "residual structure belongs in SequentialEvaluator."
+        )
+
+    # The residual terms are built once, from configs[0].problem, and handed to
+    # the whole population. A space varying a physical constant would train
+    # everyone on candidate 0's equation while recording each candidate's own
+    # value in its config.
+    problems = {c.problem.model_dump_json() if c.problem else "" for c in configs}
+    if len(problems) != 1:
+        raise ValueError(
+            "every candidate must name the same problem and the same physical "
+            f"constants to be batched together, got {len(problems)} distinct "
+            "ones. The residual terms are built once for the whole population, "
+            "so a varying constant would be recorded but never applied. Use "
+            "SequentialEvaluator."
+        )
+
+    _reject_unsupported_optimisation(configs)
+
+
+def _reject_unsupported_optimisation(configs: Sequence[RunConfig]) -> None:
+    """``train_population`` is a flat loop of plain Adam steps. Say so.
+
+    It takes one scalar ``lr`` for the whole stacked population, so each of
+    these would otherwise be read off ``configs[0]`` and applied to everyone:
+
+    * a **multi-stage** schedule. An Adam->L-BFGS config evaluated here gets
+      Adam only, so the search would rank candidates under a training procedure
+      no reproduction run performs. L-BFGS genuinely does not batch: its
+      curvature history and line search are global, so one step over stacked
+      parameters couples every candidate.
+    * a **different optimizer, its options, or a per-candidate learning rate.**
+      The optimizer axis is one of DESIGN.md 6's four research directions, and
+      searching it here would score every candidate at ``configs[0]``'s lr.
+    * an **ascent** optimizer or ``max_grad_norm``. The first is half of a
+      min-max scheme whose other half this path cannot run; the second couples
+      the population (see ``train_population``).
+    * ``resample_every``. The cloud is drawn once here, so a search whose
+      subject is resampling would never see a resample.
+    """
+    if any(len(cfg.stages) != 1 for cfg in configs):
+        raise ValueError(
+            "the batched evaluator runs one flat loop of Adam steps, but this "
+            "config declares several stages. Evaluating an Adam->L-BFGS "
+            "schedule as Adam alone would rank candidates under a training "
+            "procedure no reproduction run performs. Use SequentialEvaluator."
+        )
+    if any(len(cfg.stages[0].optimizers) != 1 for cfg in configs):
+        raise ValueError(
+            "the batched evaluator drives one optimizer over the stacked "
+            "population; a stage with several (a min-max or self-adaptive "
+            "scheme) belongs in SequentialEvaluator."
+        )
+
+    specs = {cfg.stages[0].optimizers[0].model_dump_json() for cfg in configs}
+    if len(specs) != 1:
+        raise ValueError(
+            f"every candidate must declare the same optimizer to be batched "
+            f"together, got {len(specs)} distinct ones. One Adam runs over the "
+            "stacked population with a single scalar learning rate, so a space "
+            "varying lr (or any other optimizer field) would score every "
+            "candidate at the first one's setting. Use SequentialEvaluator."
+        )
+
+    spec = configs[0].stages[0].optimizers[0]
+    if spec.name != "adam":
+        raise ValueError(
+            f"the batched evaluator runs Adam; this config asks for "
+            f"{spec.name!r}. Use SequentialEvaluator."
+        )
+    if spec.options:
+        raise ValueError(
+            f"the batched evaluator passes no options to Adam, but this config "
+            f"sets {sorted(spec.options)}. Use SequentialEvaluator."
+        )
+    if spec.direction != "min":
+        raise ValueError(
+            "the batched evaluator only descends; direction='max' is half of a "
+            "min-max scheme whose other half it cannot run. Use "
+            "SequentialEvaluator."
+        )
+    if spec.max_grad_norm is not None:
+        raise ValueError(
+            "global gradient-norm clipping couples the population: one norm "
+            "over all P candidates means a single diverging candidate damps "
+            "every other one's step. Use SequentialEvaluator."
+        )
+    if any(cfg.stages[0].resample_every for cfg in configs):
+        raise ValueError(
+            "train_population draws the collocation cloud once and never "
+            "resamples, but this config sets resample_every. A search whose "
+            "subject is resampling must see the resampling happen: use "
+            "SequentialEvaluator."
         )
 
 

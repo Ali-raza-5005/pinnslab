@@ -159,10 +159,15 @@ def _objective_the_slow_way(cfg: RunConfig) -> float:
     state = State()
     part.on_resample(state)
     residuals = part.residual_fn(state)
-    # The batched path concatenates every term's per-point residuals and takes
-    # one mean of squares, which is exactly the `mean` weighting.
-    stacked = torch.cat([residuals[name] for name in sorted(residuals)])
-    return float((stacked**2).mean().detach())
+    # The config's own weighting object, not a re-implementation of it. This
+    # used to concatenate every term and take one pooled mean of squares, with
+    # a comment asserting that "*is* the mean weighting" — which is true only
+    # when every term has the same point count. It never does: here `pde` sees
+    # 60 points and `ic` sees 12, and on the shipped Burgers example the two
+    # objectives differed by 6.3x with the boundary term weighted 26x too low.
+    # So the test passed while pinning the bug, because both sides computed the
+    # same wrong number. Calling the real object is what makes this an oracle.
+    return float(part.weighting(residuals, state).detach())
 
 
 def test_the_batched_path_trains_every_candidate():
@@ -184,17 +189,103 @@ def test_candidates_are_scored_independently():
 
 def test_a_space_that_holds_the_point_budget_fixed_batches_cleanly():
     """The shape of paper 1's search: a fixed collocation budget (which
-    DESIGN.md §8 requires for fairness anyway) with the other axes free."""
+    DESIGN.md §8 requires for fairness anyway) with the other axes free.
+
+    The axis varied here is a **loss weight**, one of DESIGN.md §6's four
+    directions and one that genuinely batches: the per-term coefficient enters
+    the population residual per candidate. This test used to vary
+    `stages.0.optimizers.0.lr`, which does *not* batch — one Adam runs over the
+    stacked population with one scalar lr, so every candidate was silently
+    trained at candidate 0's learning rate while the archive recorded three
+    different ones. That is now refused; see the test below.
+    """
     space = SearchSpace(
-        {"stages.0.optimizers.0.lr": {
-            "kind": "continuous", "low": 1e-4, "high": 1e-2, "log": True}}
+        {"weighting.coefficients.ic": {
+            "kind": "continuous", "low": 1.0, "high": 100.0, "log": True}}
     )
-    configs = [space.apply(base_config(), [u]) for u in (0.1, 0.5, 0.9)]
+    # The coefficient must already be declared: `_set_path` refuses to create a
+    # key the config does not have, so a search cannot introduce a field the
+    # schema never saw. Declaring it at 1.0 is the neutral starting point.
+    base = base_config(weighting={"kind": "mean", "coefficients": {"ic": 1.0}})
+    configs = [space.apply(base, [u]) for u in (0.1, 0.5, 0.9)]
 
     scores = BatchedEvaluator()(configs, steps=5)
 
     assert len(scores) == 3
     assert all(math.isfinite(s) for s in scores)
+    # Different weights on the IC term are different objectives, so the
+    # candidates must not collapse onto one number — which is what would happen
+    # if the coefficient were read off configs[0] and applied to everyone.
+    assert len(set(scores)) == 3
+
+
+def test_a_per_candidate_learning_rate_is_refused_rather_than_ignored():
+    """One Adam, one scalar lr, P candidates.
+
+    A space over `stages.0.optimizers.0.lr` reads plausibly and used to run
+    without complaint, scoring every candidate at the *first* one's lr. The
+    archive then held three distinct config hashes for one experiment, and the
+    cache would serve those fitnesses back forever. Refusing is the only
+    correct answer until the ensemble carries a per-member lr.
+    """
+    space = SearchSpace(
+        {"stages.0.optimizers.0.lr": {
+            "kind": "continuous", "low": 1e-4, "high": 1e-2, "log": True}}
+    )
+    configs = [space.apply(base_config(), [u]) for u in (0.1, 0.9)]
+
+    with pytest.raises(ValueError, match="same optimizer"):
+        BatchedEvaluator()(configs, steps=1)
+
+
+def test_a_multi_stage_schedule_is_refused_rather_than_run_as_adam():
+    """An Adam->L-BFGS config evaluated as Adam alone ranks candidates under a
+    training procedure no reproduction run performs."""
+    staged = base_config(stages=[
+        {"name": "adam", "steps": 10, "optimizers": [{"name": "adam", "lr": 1e-3}]},
+        {"name": "lbfgs", "steps": 5, "optimizers": [{"name": "lbfgs", "lr": 1.0}]},
+    ])
+    with pytest.raises(ValueError, match="several stages"):
+        BatchedEvaluator()([staged], steps=1)
+
+
+def test_a_varying_physical_constant_is_refused():
+    """Residual terms are built once, from configs[0].problem. A space over nu
+    would train the whole population on candidate 0's equation while recording
+    each candidate's own value in its config."""
+    configs = [
+        base_config(problem={"name": "burgers1d", "options": {"nu": 0.3}}),
+        base_config(problem={"name": "burgers1d", "options": {"nu": 0.4}}),
+    ]
+    with pytest.raises(ValueError, match="same problem"):
+        BatchedEvaluator()(configs, steps=1)
+
+
+def test_a_resampling_config_is_refused():
+    """train_population draws the cloud once; a search over *resampling* that
+    never resamples measures nothing."""
+    resampling = base_config(stages=[{
+        "name": "adam",
+        "steps": 10,
+        "resample_every": 5,
+        "optimizers": [{"name": "adam", "lr": 1e-3}],
+    }])
+    with pytest.raises(ValueError, match="resample_every"):
+        BatchedEvaluator()([resampling], steps=1)
+
+
+def test_the_batched_objective_honours_the_declared_coefficients():
+    """`weighting.coefficients` are part of the objective, so they must reach
+    it. They did not: the batched path pooled every term into one mean and
+    dropped the coefficients entirely."""
+    plain = base_config()
+    weighted = base_config(weighting={"kind": "mean", "coefficients": {"ic": 10.0}})
+
+    scores = BatchedEvaluator()([plain, weighted], steps=0)
+
+    assert scores[0] != scores[1], (
+        "a 10x weight on the IC term did not change the objective"
+    )
 
 
 def test_a_candidates_fitness_does_not_depend_on_its_position_in_the_batch():

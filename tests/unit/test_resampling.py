@@ -254,16 +254,49 @@ def test_a_sampler_sees_the_step_and_the_cloud_it_is_replacing(results_root):
 def test_the_batched_search_path_hands_samplers_the_candidate_networks():
     """The population evaluator draws each candidate's cloud through the same
     sampler objects, so an adaptive one must find real networks there rather
-    than an empty dict — it may score even its first draw with them."""
+    than an empty dict — it may score even its first draw with them.
+
+    ``resample_every`` is cleared here because the batched path now refuses it
+    (see the test below): what is under test is the *initial* draw, which the
+    batched path does make.
+    """
     from pinnslab.search.evaluate import BatchedEvaluator
 
     RecordingSampler.calls.clear()
     cfg = resampling_config(strategy="test.recorder", steps=5)
+    cfg = _without_resampling(cfg)
 
     BatchedEvaluator()([cfg], steps=5)
 
     assert RecordingSampler.calls, "the batched path never drew a cloud"
     assert RecordingSampler.calls[0]["nets"] == ["u"]
+
+
+def test_the_batched_path_refuses_a_resampling_config():
+    """``train_population`` draws the cloud once and never resamples.
+
+    So a ``resample_every`` config evaluated there trains on one fixed cloud
+    while the reproduction run — and the sequential evaluator it is supposed to
+    agree with — resamples every K steps. That is a different training
+    procedure under the same config hash, and it ran without complaint until
+    2026-08-28. Sampling is *the* subject of paper 1, so this is the single
+    most expensive thing this path could quietly get wrong.
+    """
+    from pinnslab.search.evaluate import BatchedEvaluator
+
+    with pytest.raises(ValueError, match="resample_every"):
+        BatchedEvaluator()([resampling_config(steps=5)], steps=5)
+
+
+def _without_resampling(cfg):
+    return cfg.model_copy(
+        update={
+            "stages": [
+                stage.model_copy(update={"resample_every": None})
+                for stage in cfg.stages
+            ]
+        }
+    )
 
 
 def test_a_geometric_sampler_rejects_options_it_would_ignore():

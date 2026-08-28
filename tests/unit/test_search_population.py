@@ -90,6 +90,56 @@ def test_the_ensemble_reproduces_each_member():
         assert torch.allclose(batched[index], net(points[index]), atol=TOLERANCE)
 
 
+def test_the_ensemble_uses_the_members_own_activation():
+    """The regression this file exists to catch, and did not.
+
+    ``Ensemble`` defaulted to ``torch.tanh`` regardless of what the members
+    were built with, so a config declaring ``activation: sin`` was batched as a
+    tanh network. The search then scored a candidate its own ``config_hash``
+    did not describe, and no single-run reproduction would match — silently,
+    because a tanh PINN trains perfectly well. Measured before the fix: 7.9e-2
+    disagreement on the same inputs for a depth-2 width-8 sin MLP.
+    """
+    net = nn.Sequential(nn.Linear(2, 6), nn.SiLU(), nn.Linear(6, 1))
+    x = torch.randn(4, 2)
+
+    batched = Ensemble([net])(x.unsqueeze(0))[0]
+
+    assert torch.allclose(batched, net(x), atol=1e-12)
+
+
+def test_a_population_mixing_activations_is_refused():
+    """Activation search should batch (index into a fixed set) but the ensemble
+    has no per-member activation yet. Until it does, mixing them would train
+    everyone under whichever came first."""
+    tanh_net = nn.Sequential(nn.Linear(2, 6), nn.Tanh(), nn.Linear(6, 1))
+    silu_net = nn.Sequential(nn.Linear(2, 6), nn.SiLU(), nn.Linear(6, 1))
+
+    with pytest.raises(ValueError, match="mixes 2 activations"):
+        Ensemble([tanh_net, silu_net])
+
+
+def test_a_member_mixing_activations_across_layers_is_refused():
+    """``forward`` applies one callable at every hidden layer, so a per-layer
+    network cannot be represented here at all."""
+    mixed = nn.Sequential(
+        nn.Linear(2, 6), nn.Tanh(), nn.Linear(6, 6), nn.SiLU(), nn.Linear(6, 1)
+    )
+    with pytest.raises(ValueError, match="more than one activation"):
+        Ensemble([mixed])
+
+
+def test_an_explicit_activation_still_wins():
+    """The escape hatch for a caller batching bare modules that carry no
+    activation module of their own."""
+    net = nn.Sequential(nn.Linear(2, 6), nn.Tanh(), nn.Linear(6, 1))
+    x = torch.randn(4, 2)
+
+    forced = Ensemble([net], activation=torch.sin)(x.unsqueeze(0))[0]
+
+    assert not torch.allclose(forced, net(x), atol=1e-6)
+
+
 def test_members_must_share_a_shape():
     """The binding constraint, and the one DESIGN.md §6 flagged for vmap too:
     architecture search does not batch and must group by shape first."""
