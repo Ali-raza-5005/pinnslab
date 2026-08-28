@@ -206,10 +206,43 @@ def test_the_search_budget_is_computable_before_it_runs():
     """DESIGN.md §8: compute parity including search cost. A number you can
     only get by running the search is no use for planning a fair comparison."""
     schedule = FidelitySchedule(rungs=(100, 1000), keep=0.5)
-    # 8 candidates x 100 steps, then 4 survivors x the extra 900.
-    assert schedule.cost(8) == 8 * 100 + 4 * 900
+    # 8 candidates x 100 steps, then 4 survivors x 1000 — a survivor is
+    # retrained from scratch at the higher rung, not continued, so it is
+    # charged the whole rung and not the 900-step increment. This asserted the
+    # increment until 2026-08-28 and so under-reported the search's own cost.
+    assert schedule.cost(8) == 8 * 100 + 4 * 1000
     whole = spec(budget=schedule, pop_size=8, generations=3)
-    assert whole.total_inner_steps == 3 * 4400
+    assert whole.total_inner_steps == 3 * 4800
+
+
+def test_the_declared_budget_is_what_the_ladder_actually_spends():
+    """The bound and the measurement have to be the same number.
+
+    ``FidelitySchedule.cost`` is what a protocol quotes before a sweep;
+    ``GenerationReport.inner_steps`` is what the loop measures afterwards. They
+    are computed by different code from different premises, so if one drifts
+    the other is the only thing that would catch it — and a compute-parity
+    defence built on an under-reported bound is worse than no number.
+    """
+    schedule = FidelitySchedule(rungs=(4, 12), keep=0.5)
+    reports = []
+
+    class Recording(Search):
+        def step(self):
+            report = super().step()
+            reports.append(report)
+            return report
+
+    search = Recording(
+        spec(budget=schedule, pop_size=4, generations=1),
+        base_config(),
+        # distinct fitnesses, so no two candidates share a config hash and the
+        # cache cannot make the measured cost lower than the bound
+        lambda configs, steps: [1.0 / (i + 1) for i in range(len(configs))],
+    )
+    search.run()
+
+    assert reports[0].inner_steps == schedule.cost(4)
 
 
 def test_at_least_one_candidate_always_survives_a_rung():
@@ -512,6 +545,47 @@ def test_a_diverged_candidate_scores_worse_than_every_finite_one():
     assert np.isfinite(scores[-1]), "a penalty of inf tells DE nothing"
 
 
+def test_a_diverged_candidate_is_worst_even_when_fitness_is_maximised():
+    """The regression the old penalty had, and the one it could not survive.
+
+    ``_orient`` negates a maximised metric so lower is always better, so the
+    finite scores reaching ``_penalty`` are *negative*. The old
+    ``10 * max(finite)`` then returned a number an order of magnitude **better**
+    than any candidate that actually trained: DE would have driven the whole
+    population toward configurations that diverge, and the search would have
+    looked like it was converging.
+    """
+    def evaluate(configs, steps):
+        # a maximised metric: 0.9, 0.8, 0.7, and one candidate that diverged
+        return [float("nan")] + [0.9 - 0.1 * i for i in range(len(configs) - 1)]
+
+    search = Search(
+        spec(generations=1, pop_size=4, fitness={"metric": "acc", "direction": "max"}),
+        base_config(),
+        evaluate,
+    )
+    search.run()
+
+    scores = sorted(e.fitness for e in search.state.archive)
+    assert scores[-1] > scores[-2], (
+        f"the diverged candidate scored {scores[-1]} against finite "
+        f"{scores[:-1]}; it must be strictly worst"
+    )
+
+
+def test_the_penalty_does_not_tie_with_the_best_when_every_score_is_equal():
+    """``10 * max(finite)`` returned 0.0 when every candidate scored 0.0,
+    which makes a diverged candidate exactly as good as a perfect one."""
+    def evaluate(configs, steps):
+        return [float("nan") if i == 0 else 0.0 for i in range(len(configs))]
+
+    search = Search(spec(generations=1, pop_size=4), base_config(), evaluate)
+    search.run()
+
+    scores = sorted(e.fitness for e in search.state.archive)
+    assert scores[-1] > 0.0
+
+
 def test_an_evaluator_returning_the_wrong_count_is_an_error():
     search = Search(spec(generations=1), base_config(), lambda configs, steps: [1.0])
     with pytest.raises(ValueError, match="one per config"):
@@ -562,6 +636,65 @@ def test_a_resumed_search_proposes_what_an_uninterrupted_one_would(tmp_path):
     assert [e.vector for e in rest.state.archive] == [
         e.vector for e in uninterrupted.state.archive
     ]
+
+
+def test_the_search_records_what_it_cost(tmp_path):
+    """DESIGN.md §11 makes search timing a first-class result, not metadata:
+    "a GA that burns 3000x compute winning is not a result". Nothing recorded
+    it until 2026-08-28 — the archive held fitnesses and no clock at all."""
+    search = Search(
+        spec(generations=2, pop_size=4),
+        base_config(),
+        lambda configs, steps: [1.0 / (i + 1) for i in range(len(configs))],
+        root=tmp_path,
+    )
+    state = search.run()
+
+    assert state.total_seconds > 0.0
+    assert state.total_inner_steps == 2 * spec().budget.cost(4)
+    assert state.provenance["pinnslab_version"]
+    assert state.provenance["gpu_name"]
+    assert state.provenance["dtype"]
+
+
+def test_the_cost_survives_a_resume(tmp_path):
+    """A search spans Kaggle sessions, so a total measured from the current
+    process would report the last session's cost as the whole search's."""
+    def evaluate(configs, steps):
+        return [1.0 / (i + 1) for i in range(len(configs))]
+
+    # One generation, then the session "dies"; a second process resumes the
+    # same spec (a different one would be refused, and rightly).
+    started = Search(spec(generations=2, pop_size=4), base_config(), evaluate,
+                     root=tmp_path)
+    started.step()
+    after_one = started.state.total_seconds
+
+    resumed = Search(spec(generations=2, pop_size=4), base_config(), evaluate,
+                     root=tmp_path).run()
+
+    assert after_one > 0.0
+    assert resumed.total_seconds > after_one, (
+        "the resumed session restarted the clock instead of continuing it"
+    )
+    assert resumed.total_inner_steps == 2 * spec().budget.cost(4)
+
+
+def test_a_cached_candidate_is_marked_and_charged_no_time(tmp_path):
+    """A cache hit costs nothing, and the archive has to say so — otherwise the
+    search's reported cost grows every time a duplicate is re-proposed."""
+    search = Search(
+        spec(generations=2, pop_size=4, algorithm="de"),
+        base_config(),
+        lambda configs, steps: [1.0] * len(configs),
+        root=tmp_path,
+    )
+    state = search.run()
+
+    for evaluation in state.archive:
+        if evaluation.cached:
+            assert evaluation.seconds == 0.0
+    assert any(not e.cached for e in state.archive)
 
 
 def test_resuming_under_a_changed_spec_is_refused(tmp_path):

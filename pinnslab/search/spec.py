@@ -60,12 +60,27 @@ class FidelitySchedule(Spec):
 
         The number DESIGN.md §8 demands be reported alongside any comparison:
         a search that wins while burning 3000x the compute has not won, and
-        this is what makes that budget computable *before* the sweep runs.
+        this is what makes that budget computable *before* the sweep runs. It
+        must therefore match what the loop actually spends, and it did not.
+
+        **A survivor is retrained from scratch, not continued.** Both
+        evaluators start a promoted candidate over at the higher rung —
+        ``SequentialEvaluator`` gives each rung its own run directory
+        (``..._n<steps>``) and ``BatchedEvaluator`` builds a fresh ensemble —
+        so a candidate reaching rung ``r`` costs ``rungs[r]`` steps *again*,
+        not the ``rungs[r] - rungs[r-1]`` increment a warm-started ladder would
+        pay. This charged the increment and so under-reported the budget by
+        21% on ``rungs=(1000, 5000, 20000), keep=0.5, pop=16`` (108,000 against
+        the 136,000 the loop spends), understating exactly the number a
+        compute-parity defence rests on.
+
+        ``Search._ladder`` measures the same quantity after the fact
+        (``ran * steps`` per rung); the two now agree, and a search that hits
+        the cache spends less than this bound rather than more.
         """
-        total, alive, previous = 0, population, 0
+        total, alive = 0, population
         for index, steps in enumerate(self.rungs):
-            total += alive * (steps - previous)
-            previous = steps
+            total += alive * steps
             alive = self.survivors(population, index)
         return total
 

@@ -46,6 +46,17 @@ class Evaluation:
     fitness: float
     steps: int
     cached: bool = False
+    #: Wall-clock attributed to this candidate, in seconds. DESIGN.md §11 makes
+    #: timing a first-class experimental result rather than metadata, because
+    #: compute parity *including search cost* is a core reviewer defence.
+    #:
+    #: An **attribution, not a measurement**, and the difference matters: the
+    #: batched evaluator trains the whole population simultaneously, so there is
+    #: no per-candidate time to measure. This is the evaluator call's wall clock
+    #: divided by the number of candidates it actually evaluated. A cache hit
+    #: costs nothing and records 0.0, which is why the search's total is the sum
+    #: of the generation times and not of these.
+    seconds: float = 0.0
 
 
 @dataclass
@@ -57,6 +68,20 @@ class SearchState:
     algorithm_state: dict[str, Any] = field(default_factory=dict)
     rng_state: dict[str, Any] = field(default_factory=dict)
     archive: list[Evaluation] = field(default_factory=list)
+    #: Wall-clock the search has spent across **every** session, in seconds.
+    #: Accumulated rather than measured from the current process, because a
+    #: search spans many Kaggle sessions and "how long did the search take" is
+    #: a number the paper reports (DESIGN.md §11, ``total_search_time``).
+    total_seconds: float = 0.0
+    #: Inner training steps actually spent, summed over generations. The
+    #: measured counterpart to ``SearchSpec.total_inner_steps``, which is a
+    #: bound: the cache makes the real number smaller, and a reviewer asking
+    #: what the search cost should be given the one that happened.
+    total_inner_steps: int = 0
+    #: Rule 7 provenance for the search itself, captured on the first write.
+    #: A search produces numbers that go in a paper, so it records the version,
+    #: SHA, hardware and precision that produced them exactly as a run does.
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     # -- the incumbent ---------------------------------------------------------
 
@@ -84,16 +109,25 @@ class SearchState:
             "algorithm_state": self.algorithm_state,
             "rng_state": self.rng_state,
             "archive": [e.__dict__ for e in self.archive],
+            "total_seconds": self.total_seconds,
+            "total_inner_steps": self.total_inner_steps,
+            "provenance": self.provenance,
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> SearchState:
+        # Every field added since the first version is read with a default, so
+        # a state file written by an older tag still resumes (the same
+        # forward-compatibility rule ResultRow follows).
         return cls(
             generation=payload["generation"],
             spec_hash=payload.get("spec_hash", ""),
             algorithm_state=payload.get("algorithm_state", {}),
             rng_state=payload.get("rng_state", {}),
             archive=[Evaluation(**e) for e in payload.get("archive", [])],
+            total_seconds=float(payload.get("total_seconds", 0.0)),
+            total_inner_steps=int(payload.get("total_inner_steps", 0)),
+            provenance=payload.get("provenance", {}),
         )
 
     def save(self, directory: str | Path) -> Path:

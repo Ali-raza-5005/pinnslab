@@ -60,6 +60,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     state = search.run()
 
+    # The measured cost next to the declared bound. DESIGN.md §8 makes compute
+    # parity *including search cost* a reviewer defence, so these are results,
+    # not progress output: the bound is what a protocol promised, the measured
+    # numbers are what happened, and the cache is why they differ.
+    bound = spec.total_inner_steps
+    saved = bound - state.total_inner_steps
+    print(
+        f"search cost: {state.total_inner_steps} inner steps in "
+        f"{state.total_seconds:.1f}s"
+        + (
+            f" (bound {bound}; the cache saved {saved})"
+            if saved
+            else f" (bound {bound}, no cache hits)"
+        )
+    )
+
     best = state.best()
     if best is None:
         print("no candidate was evaluated")
