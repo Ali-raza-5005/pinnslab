@@ -27,7 +27,7 @@ Python >= 3.11. A paper pins an exact tag rather than a branch, so that a result
 can always be reproduced by the code that produced it:
 
 ```bash
-pip install "pinnslab @ git+https://github.com/Ali-raza-5005/pinnslab@v0.2.0"
+pip install "pinnslab @ git+https://github.com/Ali-raza-5005/pinnslab@v0.3.0"
 ```
 
 Tags are cut when a paper needs to pin the current state; `git tag -l` is the
@@ -68,6 +68,7 @@ python scripts/run_search.py examples/search.yaml \
 | search over configurations      | `scripts/run_search.py` with a `search.yaml`                     |
 | turn results into a paper       | `scripts/make_figures.py`                                        |
 | add a sampler / weighting / ... | one file with `@register_*`, then `--register` it                |
+| check it works on a real GPU    | `scripts/validate_gpu.py --json report.json`                      |
 
 **Where results go.** Every run writes one directory under `--results`, named
 `<config_hash>_s<seed>`, holding `config.yaml`, `provenance.json`,
@@ -124,14 +125,35 @@ in `CLAUDE.md` are binding — in particular:
 The bootstrap (DESIGN.md §9, steps 1–5) is complete: `utils/`, `registry/`,
 `training/`, `geometry/`, `models/`, `physics/`, `losses/`, `eval/`,
 `benchmarks/`, `viz/`, `search/`, the Kaggle runner, the scripts and the
-examples. 451 tests, and `CHANGELOG.md` records what each tag changed.
+examples. 497 tests, and `CHANGELOG.md` records what each tag changed.
+
+v0.3.0 is a research-readiness audit done before the first real experiments. It
+found and fixed five things that would have produced wrong numbers quietly —
+four of them in one seam, the batched search evaluator, where a field read off
+`configs[0]` was applied to the whole population. The largest: that path
+optimised a **different objective** than the config declared (a pooled mean over
+all residual terms instead of a mean per term, a 6.3x difference on the shipped
+Burgers example, with `weighting.coefficients` dropped entirely). CHANGELOG.md
+has the full list; DESIGN.md §6 has the correction and the rule that follows.
 
 Next is P0 on paper 1 (sampling). Infrastructure work from here is
 paper-driven.
 
-**Known limits, stated rather than discovered later.** No GPU has run this code:
-the batched population evaluator is measured at 1.7–3.4x on CPU and DESIGN.md
-§6's "20–50x on a T4" is **unverified** — `scripts/benchmark_population.py`
-reproduces the measurement on whatever hardware you have. Only one benchmark
-(1-D Burgers) and one architecture (MLP) ship; `random` and `de` are the only
-search algorithms.
+**Known limits, stated rather than discovered later.**
+
+- **No GPU has run this code.** The batched population evaluator is measured at
+  1.7–3.4x on CPU and DESIGN.md §6's "20–50x on a T4" is **unverified**, as is
+  §5's FP64/FP32 ratio and the behaviour of
+  `torch.use_deterministic_algorithms(True)` on CUDA.
+  `scripts/validate_gpu.py` closes all of them in one command and prints a
+  report; `scripts/benchmark_population.py` is the speedup measurement alone.
+- **The batched evaluator is a narrow path, not "the fast version of a run".**
+  It runs one flat loop of Adam over one fixed cloud, and now *refuses* — rather
+  than approximating — a multi-stage schedule, a per-candidate learning rate or
+  optimizer, a varying physical constant, a non-`mean` weighting, ascent,
+  gradient clipping, inverse-problem parameters, and `resample_every`. Each of
+  those belongs in `SequentialEvaluator`, which is the oracle.
+- Only one benchmark (1-D Burgers) and one architecture (MLP) ship; `random` and
+  `de` are the only search algorithms. An `Ensemble` cannot yet vary the
+  activation across the population (it refuses a mixed one rather than
+  silently unifying it), so activation search runs sequentially for now.

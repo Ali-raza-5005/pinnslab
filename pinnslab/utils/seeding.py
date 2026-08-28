@@ -1,12 +1,12 @@
-﻿"""Seeding and determinism (DESIGN.md Â§5).
+"""Seeding and determinism (DESIGN.md §5).
 
 Determinism costs throughput. We take the cost: a PINN result that cannot be
 reproduced bit-for-bit cannot be defended in rebuttal.
 
 Two responsibilities live here:
 
-1. :func:`set_seed` â€” put the process into a deterministic state at run start.
-2. :func:`capture_rng_state` / :func:`restore_rng_state` â€” round-trip every RNG
+1. :func:`set_seed` — put the process into a deterministic state at run start.
+2. :func:`capture_rng_state` / :func:`restore_rng_state` — round-trip every RNG
    stream through a checkpoint. A resumed run that continues from a *fresh* RNG
    is not the same experiment as the uninterrupted one, and the difference is
    invisible in the metrics.
@@ -27,7 +27,7 @@ import numpy as np
 import torch
 
 #: Required by cuBLAS for deterministic reductions; must be set before the CUDA
-#: context is created (DESIGN.md Â§5).
+#: context is created (DESIGN.md §5).
 CUBLAS_WORKSPACE_CONFIG = ":4096:8"
 
 #: numpy's legacy seeder and torch's CPU generator differ in accepted range;
@@ -124,7 +124,7 @@ def restore_rng_state(state: dict[str, Any]) -> None:
 
     CUDA state is restored only when the device count matches what was captured;
     a mismatch means the run moved hardware, which violates the
-    hardware-uniformity rule (DESIGN.md Â§5) and is reported rather than papered
+    hardware-uniformity rule (DESIGN.md §5) and is reported rather than papered
     over.
     """
     random.setstate(_as_nested_tuple(state["python"]))
@@ -154,7 +154,7 @@ def restore_rng_state(state: dict[str, Any]) -> None:
         raise RuntimeError(
             f"checkpoint carries CUDA RNG state for {len(cuda_state)} device(s) "
             f"but this process sees {torch.cuda.device_count()}; a comparison "
-            "group must not span hardware configurations (DESIGN.md Â§5)"
+            "group must not span hardware configurations (DESIGN.md §5)"
         )
     torch.cuda.set_rng_state_all([s.cpu().to(torch.uint8) for s in cuda_state])
 

@@ -9,33 +9,83 @@ immediately instead of being queued.
 
 ---
 
-## search/ (built 2026-08-08)
+## the unit gate's 60s budget (measured 2026-08-28)
+
+- [ ] **`pytest -m "unit and not slow"` now straddles its budget.** Measured
+      five times on this laptop after the audit: **59s, 63s, 66s, 75s, 82s** for
+      478 tests. DESIGN.md §3 budgets 60s and says why it is load-bearing —
+      "this is the command whose latency decides whether tests get run at all".
+
+      Two honest observations before anyone optimises:
+      1. **Machine variance dominates the change.** Identical work measured 59s
+         and 82s back to back. The audit's new tests account for ~4s of it
+         (the whole `test_algorithms_on_benchmarks.py` file is 3.9s, and ~2s of
+         that is import cost it shares with the rest of the suite).
+      2. **The slowest tests are pre-existing and each trains a real network**:
+         `test_a_cheap_target_is_measured_every_step_not_on_the_trace_schedule`
+         (4.7s), `test_a_sweep_partitions_between_workers` (4.5s),
+         `test_min_and_max_optimizers_coexist_on_disjoint_slices` (2.2s).
+
+      So the options are to shrink those (fewer steps, smaller nets — they are
+      testing loop mechanics, not convergence), to move a few to `slow`, or to
+      accept a higher budget and say so in §3. Decide deliberately; do **not**
+      let it drift, because the failure mode is silent: a gate that takes two
+      minutes stops being run before anyone notices it stopped being run.
+
+---
+
+## search/ (built 2026-08-08, audited 2026-08-28)
 
 One source bug was found and fixed while building rather than queued:
 `BatchedEvaluator` reseeded the RNG once per population, so a candidate's
 network initialisation — and therefore its fitness — depended on its position
-in the batch, which silently breaks the `(config_hash, steps)` cache key. What
-is left:
+in the batch, which silently breaks the `(config_hash, steps)` cache key.
+
+The 2026-08-28 audit found five more, all fixed with regression tests rather
+than queued (CHANGELOG v0.3.0, DESIGN.md §6 CORRECTION 2): the batched path
+optimised a pooled objective instead of the declared per-term one; `Ensemble`
+ignored the declared activation; a diverged candidate could outscore every real
+one under a maximised fitness; `FidelitySchedule.cost` under-reported compute by
+21%; and the path silently ignored per-candidate `lr`, optimizer, problem
+constants, multi-stage schedules and `resample_every`. What is left:
 
 - [ ] **The batched speedup is unmeasured on a GPU**, which is the only
       hardware where DESIGN.md §6's "20-50x" claim could hold. CPU gives
       1.7-3.4x, peaking at P=16. Measure on a T4 and a P100 before any paper
       quotes a search-cost number, and record P alongside it — the curve is not
       monotone, so "pop_size 50" may be slower per candidate than 16.
+      **`scripts/validate_gpu.py` is what runs it**; it needs a Kaggle session,
+      not more code.
 
-- [ ] **`Ensemble` assumes one activation for every layer and every member.**
-      It takes a single `activation` callable, so activation search — one of
-      DESIGN.md §6's four directions — cannot yet vary that axis across the
-      population even though it is exactly the kind that *should* batch (index
-      into a fixed set). Needs a per-member activation index and a gather;
-      decide when a paper reaches for it.
+- [x] **`Ensemble` assumes one activation for every layer and every member.**
+      Half done, and the half that mattered. It *silently substituted* `tanh`
+      for whatever the members declared, which was a correctness bug rather
+      than a missing feature (measured: 7.9e-2 disagreement for a `sin` MLP);
+      it now infers the activation and **refuses** a mixed population instead
+      of unifying it. Varying activation *across* the population — the one of
+      DESIGN.md §6's four directions that should batch cleanly — still needs a
+      per-member index and a gather. Until then it raises, so a paper reaching
+      for it gets a message rather than a wrong number.
 
 - [ ] **`BatchedEvaluator` scores the training objective, never a held-out
       metric.** That is documented and deliberate (no reference solution on
-      that path), but it means a search optimising `rel_l2` silently falls back
-      to the slow path. Worth a test that the two paths' *rankings* agree on a
-      real problem, since agreeing on the objective does not guarantee agreeing
-      on which candidate generalises.
+      that path). Now that the two paths genuinely share an objective (they did
+      not before 2026-08-28), the remaining question is the interesting one:
+      does agreeing on the objective mean agreeing on which candidate
+      *generalises*? Worth a test that the two paths' **rankings** agree on a
+      real problem — and if they do not, that is a result about multi-fidelity
+      search, not a bug.
+
+- [ ] **The two evaluators draw different collocation clouds for one config.**
+      `SequentialEvaluator` goes through `build_trainer`, whose stream is
+      `derive_seed(seed, "trainer", config_hash)`; `BatchedEvaluator` uses
+      `torch.Generator().manual_seed(cfg.seed)`. So a candidate's batched
+      fitness is not reproducible by the run that reproduces it, even though
+      both are now minimising the same objective. Harmless for *ranking* (every
+      candidate is treated alike, and the clouds are drawn from the same
+      distribution) but it means "rerun the winner sequentially and you get the
+      search's number" is false. Decide whether the batched path should adopt
+      the trainer's derivation before quoting a batched fitness in a paper.
 
 ---
 
@@ -164,7 +214,14 @@ four now have tests. What is left:
 
 ---
 
-## training/trainer (reviewed 2026-08-08)
+## training/trainer (reviewed 2026-08-08, audited 2026-08-28)
+
+One source bug found in the 2026-08-28 audit was fixed rather than queued:
+`_track_target` used `eval.best_mode` for the *target's* direction, so a config
+keeping the highest value of one metric while targeting a low value of another
+recorded time-to-target as reached at its first trace point. `EvalSpec` now has
+an explicit `target_mode`. This changed every config hash; nothing was on disk.
+
 
 One source bug found in this pass was fixed immediately: `_fit` inferred "is
 this a fresh run" from `global_step == 0`, but a checkpoint saved at step 0

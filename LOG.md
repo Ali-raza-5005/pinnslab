@@ -5,6 +5,52 @@ phase, days left in timebox. Newest first.
 
 ---
 
+## 2026-08-28 — research-readiness audit before P0
+
+- **Ran**: a full audit of every module against the question "would this produce
+  a wrong number quietly?" Suite 451 → 497 green, ruff clean, the 10-cell
+  example sweep and the figure loop end to end, and `scripts/validate_gpu.py`
+  smoke-tested on CPU. Tagged v0.3.0.
+- **Learned (the expensive one)**: **the batched search evaluator was scoring a
+  different objective than the config declared.** It pooled every residual term
+  into one mean; `MeanWeighting` means each term separately then sums. On the
+  shipped Burgers example that is a 6.3x difference with the boundary term 26x
+  under-weighted, and `weighting.coefficients` were dropped outright. Every
+  batched search number would have been unreproducible by the single-run path
+  the paper reports. Fixed by folding the weighting into the residual rows.
+- **Learned (the structural one, and it generalises)**: four separate bugs in
+  that one seam were the *same* bug — a field read off `configs[0]` and applied
+  to all P. lr, optimizer, physical constants, multi-stage schedules,
+  `resample_every`: each ran without complaint and scored every candidate at
+  candidate 0's setting, while the archive recorded distinct config hashes. The
+  rule now enforced: **a narrow path must refuse what it cannot express, never
+  approximate it.** DESIGN.md §6 has the correction.
+- **Learned (about the tests)**: the test that should have caught #1 called
+  itself "THE test of this module" and built its oracle by re-implementing the
+  pooled mean, so both sides computed the same wrong number. Third instance of
+  this in the repo, after the `wall_time` fixture and the unread `SAMPLERS`
+  registry. **An oracle that reimplements the thing under test is not an
+  oracle.** Every regression test added this week was checked to fail against
+  the old behaviour first.
+- **Also fixed**: a diverged candidate could score *better* than every real one
+  under a maximised fitness (the penalty was `10 * max(finite)`, and oriented
+  scores are negative), so DE would have chased divergence while the curve
+  looked like convergence; `FidelitySchedule.cost` under-reported the search's
+  own compute by 21%; time-to-target borrowed `best_mode` for its direction.
+- **Added**: `tests/unit/test_algorithms_on_benchmarks.py` — DE and random
+  search on Sphere/Rosenbrock/Rastrigin, because nothing had ever checked that
+  the optimiser optimises. DE is healthy: 1.2e-11 on Sphere at 300 generations,
+  1.0e-4 on Rosenbrock at 400, beating random search 4x at 20 generations rising
+  to 3e11x at 300. Also `scripts/validate_gpu.py`, one command to close every
+  claim that needs hardware this machine does not have.
+- **Next**: **P0 on paper 1 (sampling)**. Still open and unchanged: the GPU
+  numbers themselves — §6's "20-50x on a T4" and §5's FP64/FP32 ratio are
+  waiting on a Kaggle session, and `validate_gpu.py` is what closes them.
+- **Phase**: infrastructure audited and hardened. Paper 1 timebox not yet
+  started.
+
+---
+
 ## 2026-08-17 — the three things between the bootstrap and a sweep
 
 - **Ran**: full suite 445 tests green (401 before), unit gate ~40-57s against

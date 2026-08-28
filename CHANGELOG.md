@@ -4,6 +4,124 @@ Notable changes per tag. A paper pins a tag (DESIGN.md §2), so what matters her
 is what would change a *result*: anything that moves numbers, invalidates a
 config hash, or changes what a checkpoint can be resumed from.
 
+## v0.3.0 — 2026-08-28
+
+A research-readiness audit before the first real experiments. The bootstrap ran
+and every test passed; what the audit found is that several of those tests
+pinned the *wrong* behaviour, and the failures were concentrated in one seam —
+the batched search evaluator, where a field read off `configs[0]` was applied to
+the whole population.
+
+**Every config hash changes** (`EvalSpec` gained `target_mode`), and the batched
+evaluator's fitness changes for any config whose point groups differ in size —
+which is all of them. No results existed yet, so nothing on disk is invalidated;
+this is the last moment that was true.
+
+### Fixed — scientific correctness
+
+- **The batched evaluator optimised a different objective than the config
+  declared.** `_population_residual` concatenated every residual term and
+  `train_population` took **one pooled mean of squares** over the result.
+  `MeanWeighting` — what the single-run path minimises — is `sum_k coeff_k *
+  mean(r_k**2)`: a mean *per term*, then a sum. Those agree only when every term
+  has the same point count, which never happens. On the shipped
+  `examples/configs/burgers_uniform.yaml` (pde on 1150 points, ic on 100, bc on
+  50) the two objectives differed by **6.3x**, with the boundary term weighted
+  **26x lower** than the config asked for. `weighting.coefficients` were dropped
+  entirely. Terms are now rescaled by `sqrt(coeff_k * N_total / N_k)` before the
+  pooled reduction, which reproduces `MeanWeighting` exactly, per candidate — so
+  a search over loss weights (DESIGN.md §6's second direction) now works instead
+  of silently training everyone under `configs[0]`'s coefficients. Verified:
+  batched and single-run objectives now agree to `ratio == 1.0`.
+- **The test that should have caught it pinned the bug instead.**
+  `test_batched_and_sequential_agree_on_the_training_objective`, described in
+  its own docstring as "THE test of this module", computed its "oracle" by
+  re-implementing the pooled mean rather than calling the config's weighting
+  object — so both sides computed the same wrong number. It now calls
+  `part.weighting(residuals, state)`. This is the third instance in this repo of
+  a test passing on a premise that cannot occur (see v0.2.0's `wall_time`
+  fixture); the pattern is worth naming.
+- **`Ensemble` ignored the network's activation and always used `tanh`.** A
+  config declaring `activation: sin` was batched as a tanh network, so the
+  search scored a candidate its own `config_hash` did not describe and no
+  reproduction run would match. Measured disagreement on identical inputs for a
+  depth-2 width-8 `sin` MLP: **7.9e-2**. The activation is now inferred from the
+  members; a population mixing activations, or a member mixing them across
+  layers, is refused rather than silently unified.
+
+### Fixed — the metaheuristic layer
+
+- **A diverged candidate could score better than every real one.**
+  `Search._penalty` returned `10 * max(finite)`. For a *maximised* fitness,
+  `_orient` negates the scores, so the finite values are negative and the
+  penalty was an order of magnitude **better** than any candidate that trained:
+  DE would have driven the population toward configurations that diverge, while
+  the fitness curve looked like convergence. It also tied with the best when
+  every score was 0.0. The penalty now steps past the worst finite score by a
+  margin taken from the batch's own spread, which is strictly worse for any
+  sign and stays on the batch's scale.
+- **`FidelitySchedule.cost` under-reported the search's own compute by 21%.**
+  It charged a promoted candidate the *increment* `rungs[r] - rungs[r-1]`, as a
+  warm-started ladder would. Both evaluators retrain a survivor from scratch, so
+  the real cost is `rungs[r]` again. On `rungs=(1000, 5000, 20000), keep=0.5,
+  pop=16` it reported 108,000 inner steps against the 136,000 the loop spends —
+  understating exactly the number DESIGN.md §8's compute-parity defence rests
+  on. A new test asserts the bound and the loop's own measurement agree.
+
+### Fixed — experimental fairness
+
+- **The batched path silently ignored per-candidate differences it could not
+  express.** A search space over `stages.0.optimizers.0.lr` ran without
+  complaint and scored **every** candidate at the first one's learning rate,
+  archiving distinct config hashes for one experiment and caching those
+  fitnesses forever. The same held for the optimizer name and options, the
+  problem's physical constants, `weighting.options`, multi-stage schedules (an
+  Adam→L-BFGS config was evaluated as Adam alone), ascent optimizers,
+  `max_grad_norm`, and `resample_every` — the last being the worst, since
+  sampling is paper 1's subject and `train_population` never resamples. All are
+  now refused with a message naming `SequentialEvaluator`.
+- **Time-to-target borrowed `best_mode` for its direction.** A config keeping
+  the highest value of one metric while targeting a low value of another
+  recorded the target as reached at the first trace point — a reviewer-facing
+  compute-parity number, wrong and self-consistent. `EvalSpec.target_mode` is
+  now explicit and defaults to `min`.
+
+### Added
+
+- **Search timing and provenance.** DESIGN.md §11 makes search cost a
+  first-class result ("a GA that burns 3000x compute winning is not a result")
+  and nothing recorded it: the archive held fitnesses and no clock. `SearchState`
+  now carries `total_seconds`, `total_inner_steps` and a rule-7 provenance
+  block; `GenerationReport` carries `seconds`; `Evaluation` carries `seconds`
+  and an honest `cached` flag. Totals accumulate across sessions, so a resumed
+  search reports the whole search's cost rather than the last session's.
+  `scripts/run_search.py` prints the measured cost beside the declared bound.
+- **`tests/unit/test_algorithms_on_benchmarks.py`** (29 tests). The suite drove
+  the algorithms through `Search` with stub evaluators, which proved the
+  plumbing and said nothing about whether the optimiser optimises — a real gap
+  when §8 makes "does it beat random search at matched budget?" the question a
+  paper lives on. DE and random search now run on Sphere, Rosenbrock and
+  Rastrigin in the unit cube, with box-constraint, non-collapse, knob-sensitivity,
+  reproducibility and resume checks. Measured: DE reaches 1.2e-11 on Sphere and
+  1.0e-4 on Rosenbrock, beating random search by 4x at 20 generations rising to
+  3e11x at 300.
+- **`scripts/validate_gpu.py`.** README's honest limit was that no GPU had ever
+  run this code, which left DESIGN.md §5's determinism switches, §5's
+  precision-by-GPU rule, §6's "20-50x on a T4" and §7's two-GPU strategy all
+  unverified. One command now checks environment, bit-exact determinism,
+  FP64/FP32 cost ratio, golden accuracy, bit-exact resume across a simulated
+  session death, the batched speedup curve, and two-GPU concurrency — and prints
+  a report to paste back. Smoke-tested on CPU with `--allow-cpu`.
+- A population-size guard in `_population_residual`: a residual built for P
+  candidates now refuses points for P′, instead of broadcasting a
+  one-candidate call into P rows.
+
+### Changed
+
+- `pinnslab/utils/seeding.py` had a UTF-8 BOM and four double-encoded section
+  marks (`Â§`). Repaired.
+- 451 → 497 tests.
+
 ## v0.2.0 — 2026-08-17
 
 The bootstrap was complete but three things stood between it and a first real

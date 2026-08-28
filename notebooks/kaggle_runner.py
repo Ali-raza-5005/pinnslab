@@ -36,6 +36,30 @@ the two sessions never consider the same cell and need no coordination — but
 give them **separate** `root` directories, since two sessions cannot publish to
 one Dataset version.
 
+**Keep `CUDA_VISIBLE_DEVICES` the same for a given worker across sessions.**
+The checkpoint stores one CUDA RNG state per visible device, and
+`restore_rng_state` refuses a resume when the device count has changed
+(DESIGN.md §5's hardware-uniformity rule, enforced rather than warned about).
+So a cell started with both GPUs visible cannot be resumed by a session that
+sees one, and vice versa — the refusal is correct, but it is much cheaper to
+know now than to hit it eight hours into a sweep. Note also that
+`device_profile` records what the *session* saw (`1xTesla-T4` under a pinned
+`CUDA_VISIBLE_DEVICES`, `2xTesla-T4` without), while `gpu_name` — the field
+`viz.aggregate.assert_comparable` actually enforces uniformity on — is
+`Tesla T4` either way. Comparability is therefore unaffected by how you split
+the GPUs; only the descriptive label moves.
+
+Before the first real sweep
+---------------------------
+Run `python scripts/validate_gpu.py --two-gpu --json report.json` once on the
+session type you intend to use. Nothing in this library has ever executed on a
+GPU: DESIGN.md §5's determinism switches
+(`torch.use_deterministic_algorithms(True)` **raises** rather than degrades when
+a CUDA kernel has no deterministic implementation), §5's FP64/FP32 ratio, and
+§6's "20-50x on a T4" are all unverified claims until that script has run. It
+costs a few minutes and it is the difference between finding out now and finding
+out two hours into a cell.
+
 Killing a session
 -----------------
 Nothing to do. Re-run the notebook unchanged: finished cells are skipped, the
@@ -45,7 +69,7 @@ bit-identical to an uninterrupted sweep (pinned by
 """
 
 # ---------------------------------------------------------------- cell 1 ----
-# !pip install -q git+https://github.com/Ali-raza-5005/pinnslab@v0.2.0
+# !pip install -q git+https://github.com/Ali-raza-5005/pinnslab@v0.3.0
 #
 # The tag, never a branch: `git tag -l` in the checkout is the list of what
 # exists. A session that installs from a branch cannot say what it ran.

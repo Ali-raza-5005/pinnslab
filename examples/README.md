@@ -51,13 +51,22 @@ resolve a name nobody imported.
 
 ## What it produced here
 
-Measured 2026-08-17 on one laptop CPU (Windows, torch 2.12+cpu, float64), the
-sweep took **7m25s** for 10 runs and gave:
+Re-measured 2026-08-28 on one laptop CPU (Windows, torch 2.12+cpu, float64),
+10/10 runs completed:
 
 | method  | rel-L2 median | IQR                  | seeds |
 | ------- | ------------- | -------------------- | ----- |
-| rad     | 6.14e-4       | [5.36e-4, 7.60e-4]   | 5/5   |
-| uniform | 6.31e-4       | [4.78e-4, 6.34e-4]   | 5/5   |
+| rad     | 7.46e-4       | [5.52e-4, 7.70e-4]   | 5/5   |
+| uniform | 8.82e-4       | [6.82e-4, 9.32e-4]   | 5/5   |
+
+**These are not the same numbers v0.2.0 printed** (rad 6.14e-4, uniform
+6.31e-4), and the reason is worth understanding because it will happen again.
+v0.3.0 added `EvalSpec.target_mode`, which changed every **config hash**; the
+trainer's sampling stream is `derive_seed(seed, "trainer", config_hash)`, so a
+new hash means a new collocation cloud and therefore a different draw from the
+same distribution. Nothing about the physics or the training changed. The gap
+between the two arms is smaller than the gap between two versions of the same
+arm, which is the point the next paragraph makes anyway.
 
 **Read that as "no difference", and it is the honest outcome of this
 configuration rather than a disappointment.** Two reasons, both worth
@@ -80,13 +89,30 @@ is not free. A method that wins per step and loses per second has not won, and
 `make_figures.py` draws both axes by default so the question cannot be skipped
 (DESIGN.md §8).
 
-The search (step 4) agrees, and says so more sharply. In 4m08s it spent 4800
-inner steps over 6 candidates x 2 generations and returned `k = 2.09`, `c =
-10.0` at rel-L2 6.48e-4 — where `c = 10.0` is the *upper bound of the search
-space*, i.e. the largest uniform floor it was allowed to pick. A search pinned
-to the edge of its box is telling you the optimum is outside it: here, that
-adaptivity is not buying anything at this viscosity, which is the same
-conclusion the sweep reached and a good habit to read for.
+The search (step 4) agrees. In **4m11s** it spent **6000 inner steps** over 6
+candidates x 2 generations and returned `k = 2.31`, `c = 1.08` at rel-L2
+**7.15e-4** — no better than either arm of the sweep, from a search that cost
+about as much as the whole sweep did.
+
+Two things to read here, both of which changed in v0.3.0:
+
+- **The cost number moved from 4800 to 6000 for the same search.** Not because
+  the search got more expensive: `FidelitySchedule.cost` was *under-reporting*
+  it. It charged a promoted candidate the increment `rungs[r] - rungs[r-1]`, as
+  a warm-started ladder would, but both evaluators retrain a survivor from
+  scratch. 6 x 200 + 3 x 600 = 6000 is what actually ran, and it now matches
+  what `SearchState.total_inner_steps` measures. Compute parity including search
+  cost is a reviewer defence (DESIGN.md §8); an under-reported budget is a hole
+  in it.
+- **The incumbent moved a long way on a hash change alone.** v0.2.0's run of
+  this same search returned `c = 10.0` — pinned to the *upper bound* of the
+  space, which reads as "the optimum is outside the box". This run returned
+  `c = 1.08`, comfortably inside it. Same search, same seed, same spec; only the
+  candidates' collocation clouds differ. A 2-generation search over 6 candidates
+  does not have enough evidence to distinguish those, and that is the honest
+  reading: **this search is too small to conclude anything**, and it is sized
+  for a laptop demo rather than for a result. A paper's version needs the seeds
+  and the generations that DESIGN.md §8 asks for.
 
 ## Making it a real experiment
 

@@ -69,14 +69,22 @@ trainer, build, queue), `components.py`, `geometry/adapters.py`,
 Hardened for use 2026-08-17 (**v0.2.0**, see CHANGELOG.md): the sampler seam
 (`geometry/samplers.py`) is wired to the registry, the collocation cloud is
 checkpointed, `scripts/{run,run_sweep,run_search,benchmark_population}.py` and
-`examples/` exist, and CI runs both test commands. 451 tests.
+`examples/` exist, and CI runs both test commands.
 
-Four things to read before touching the relevant area, because each records a
+Audited for research use 2026-08-28 (**v0.3.0**): five silent-wrong-number bugs
+fixed, four of them in the batched search evaluator. `scripts/validate_gpu.py`
+and `tests/unit/test_algorithms_on_benchmarks.py` added. 497 tests.
+
+Five things to read before touching the relevant area, because each records a
 *measurement* that overrode an earlier design:
 - **DESIGN.md §6** — the population evaluator is a **batched graph, not
   `vmap`**; `vmap` cannot host a PINN residual. Residuals are rank-agnostic
   (`diffops` indexes with `...`), so one residual serves a single run and a
   population. Global grad-norm clipping is refused: it couples candidates.
+- **DESIGN.md §6, CORRECTION 2** — the batched evaluator is a **narrow path**
+  and must *refuse* what it cannot express rather than approximate it. It
+  silently optimised a different objective than the config declared until
+  2026-08-28. If you add anything to that path, add its refusal first.
 - **DESIGN.md §7** — the queue derives cell status from the results directory
   instead of writing a status column, and partitions workers statically.
 - **DESIGN.md §8** — figure conventions and the palette; SciencePlots' default
@@ -89,6 +97,11 @@ Four things to read before touching the relevant area, because each records a
 
 **Next: P0 on paper 1 (sampling).** Infrastructure work from here is
 paper-driven — log every core edit a paper task forces in `FRICTION.md`.
+
+**Before the first GPU sweep**: run `python scripts/validate_gpu.py` on the
+Kaggle session and put its numbers into LOG.md and DESIGN.md §5/§6. Nothing in
+this repo has ever executed on a GPU, so the determinism switches, the FP64/FP32
+ratio and the batched speedup are all still claims rather than measurements.
 
 Both items that were open before the first real sweep are **fixed** (2026-08-17):
 the `resample_every`-plus-resume gap (the cloud and the sampler's `state_dict`

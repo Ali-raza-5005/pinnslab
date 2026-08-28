@@ -37,9 +37,20 @@ publishability — that actively harms the tool.
   2. **Baseline oracle** — stock, unmodified DeepXDE runs produce the
      comparison numbers (RAR, RAD, importance sampling, uniform). This is a
      rebuttal asset: "baselines implemented in the standard library."
-- DeepXDE is also used as a **golden-test reference**: our from-scratch Burgers
-  must match DeepXDE's result within tolerance, catching silent implementation
-  bugs.
+- DeepXDE was also to be a **golden-test reference**: our from-scratch Burgers
+  matching DeepXDE's result within tolerance, catching silent implementation
+  bugs. **Audited 2026-08-28: this was never built, and it should not be.**
+  `tests/golden/test_burgers.py` checks against the **Cole-Hopf exact
+  solution** instead, which is a strictly stronger oracle — an analytical
+  reference cannot share a bug with us, whereas two PINN implementations
+  agreeing on a wrong number is exactly the failure mode this was meant to
+  catch. The claim is retired rather than implemented.
+
+  DeepXDE's *other* role is untouched and still owed: **stock, unmodified
+  DeepXDE runs produce the baseline comparison numbers** (RAR, RAD, importance
+  sampling, uniform), which is the rebuttal asset "baselines implemented in the
+  standard library". That is a paper-level task — it belongs in a paper repo
+  under rule 2, and it is not due until paper 1's P1.
 
 ## 1a. Why not PhysicsNeMo / Modulus
 
@@ -339,6 +350,42 @@ Three measured facts make it correct rather than merely convenient:
    in question: compute parity is a reviewer defence and an unverified speedup
    is a hole in it.
 
+### CORRECTION 2 (audited 2026-08-28): the batched path is a *narrow* path
+
+The batched evaluator is not "the fast version of a run". It is a different,
+much smaller machine that happens to produce a comparable number, and the audit
+found it silently pretending otherwise in four places. All four are the same
+mistake: **a field read off `configs[0]` and applied to the whole population.**
+
+1. **It optimised a different objective.** `train_population` reduces with one
+   *pooled* mean of squares over every residual row. `MeanWeighting` is a mean
+   **per term**, then a sum. Equal only when every term has the same point
+   count — never. On `examples/configs/burgers_uniform.yaml` (pde 1150, ic 100,
+   bc 50) the two differed by 6.3x and the boundary term carried 26x too little
+   weight. Fixed by scaling term *k* by `sqrt(coeff_k * N_total / N_k)` before
+   the pooled reduction, which reproduces `MeanWeighting` exactly and, being
+   per-candidate, makes loss-weight search work on this path.
+2. **`Ensemble` always used `tanh`**, whatever the config declared.
+3. **Per-candidate `lr`, optimizer, physical constants and multi-stage
+   schedules were ignored**, so a search over any of them scored every candidate
+   at candidate 0's setting while archiving distinct config hashes.
+4. **`resample_every` was ignored** — `train_population` draws one cloud and
+   never resamples, so a *sampling* search would have measured nothing.
+
+The rule that follows, and it is now enforced in `_reject_unsupported`: **the
+batched path must refuse anything it cannot express, never approximate it.**
+`SequentialEvaluator` is the oracle precisely because it has no such gap, and
+"use SequentialEvaluator" is an acceptable answer to any of these.
+
+The deeper lesson is about the tests. `test_batched_and_sequential_agree_on_
+the_training_objective` called itself "THE test of this module" and computed its
+oracle by *re-implementing* the pooled mean instead of calling the config's
+weighting object, so both sides computed the same wrong number. That is the
+third time in this repo a test has passed on a premise that cannot occur — after
+`viz.aggregate.band`'s equal-timestamp fixture and `SAMPLERS`, the registry
+nothing read. The pattern: **an oracle that reimplements the thing under test is
+not an oracle.** Call the real object, or the test pins the bug.
+
 **What breaks independence**: anything reducing across the population. Global
 gradient-norm clipping is the trap — one norm over all P candidates means a
 single diverging candidate damps everyone else's step. `train_population`
@@ -612,9 +659,22 @@ For the SEARCH layer specifically:
 ### TIMING — store these, they are first-class experimental results here
 Because compute-parity is a core reviewer defense, timing IS a metric, not
 metadata:
-- **inner_train_time** per candidate/run (wall-clock).
-- **loop/generation time** for the search outer loop.
+- **inner_train_time** per candidate/run (wall-clock). On the result row as
+  `timings["train_seconds"]`.
+- **loop/generation time** for the search outer loop. `GenerationReport.seconds`
+  and `Evaluation.seconds` (**built 2026-08-28** — this section had asked for it
+  since the start and nothing recorded it; the search archive held fitnesses and
+  no clock at all, so the one number §8's compute-parity defence needs about the
+  search itself was the one number the search did not keep).
 - **total_search_time** and **total_experiment_time** (cell-level).
+  `SearchState.total_seconds` and `total_inner_steps`, **accumulated across
+  sessions** rather than measured from the current process — a search spans many
+  Kaggle sessions, so a per-process clock would report the last session's cost
+  as the whole search's. `SearchState.provenance` carries rule 7 for the search,
+  because a search produces numbers a paper quotes.
+  Note `SearchSpec.total_inner_steps` is a *bound* and `SearchState.
+  total_inner_steps` is the *measurement*; the cache is why they differ, and
+  `scripts/run_search.py` prints both.
 - **time-to-target-accuracy** (steps AND seconds to reach a fixed rel-L2), plus
   `time_to_target_resolution_steps` — **decided 2026-08-17**. The target was
   only ever checked on the trace schedule, which made a reviewer-facing number
