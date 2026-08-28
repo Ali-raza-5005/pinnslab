@@ -33,6 +33,70 @@ pip install "pinnslab @ git+https://github.com/Ali-raza-5005/pinnslab@v0.3.0"
 Tags are cut when a paper needs to pin the current state; `git tag -l` is the
 authoritative list of what exists.
 
+## Starting a paper repo
+
+One directory per paper, `pinnslab` installed into it from a tag. Nothing is
+copied and nothing is edited here — the library is a dependency, and the paper
+owns its configs, its method code and its results (DESIGN.md §2).
+
+```bash
+mkdir paper-01-sampling && cd paper-01-sampling
+python -m venv .venv && . .venv/Scripts/activate      # or bin/activate
+pip install "pinnslab @ git+https://github.com/Ali-raza-5005/pinnslab@v0.3.0"
+mkdir -p configs src/method results
+```
+
+`src/method/` is where a new sampler, weighting or optimizer is born
+(CLAUDE.md rule 2). One file, one `@register_*`, imported before the config is
+built — then a config may name it, with **zero** edits to `pinnslab`:
+
+```python
+# src/method/my_sampler.py
+from pinnslab.geometry.samplers import Sampler, register_sampler
+
+@register_sampler("mine")
+class Mine(Sampler):
+    def __init__(self, spec, problem): ...
+    def __call__(self, state, current=None): ...   # draw from state.generator
+```
+
+```yaml
+# configs/burgers.yaml
+sampling:
+  points:
+    interior: {region: interior, n: 2000, strategy: mine, options: {bias: 2.0}}
+```
+
+A runner is about fifteen lines, and the same shape a Kaggle notebook has:
+
+```python
+import pathlib, sys
+sys.path.insert(0, str(pathlib.Path(__file__).parent / "src"))
+import method.my_sampler  # noqa: F401  — registers it
+
+from pinnslab.registry.config import load_config
+from pinnslab.registry.run import Run
+from pinnslab.training.build import build_trainer
+from pinnslab.utils.device import configure_runtime
+
+cfg = load_config("configs/burgers.yaml")
+ctx = configure_runtime(cfg)
+run = Run.create_or_resume(cfg, "results", f"{cfg.identity_hash()[:12]}_s{cfg.seed}")
+row = build_trainer(cfg, ctx, run).fit()
+```
+
+For sweeps, searches and figures, prefer the queue and the shipped scripts
+(`pinnslab.training.queue`, `scripts/run_sweep.py`, `scripts/make_figures.py`)
+over hand-rolled loops — they are what the resume, fairness and provenance
+guarantees are attached to.
+
+**Every result row records the commit it was produced by**, whichever way
+pinnslab got installed: from a working tree (`git`), from
+`pip install git+...@tag` (PEP 610 `direct_url.json`), or from an offline wheel
+built for a Kaggle Dataset (`hatch_build.py` stamps it at build time). The row's
+`git_source` field says which route answered, and `unknown` means none could —
+treat that as a result you cannot publish.
+
 ## Five minutes
 
 `examples/` is a complete experiment — uniform vs residual-adaptive sampling on

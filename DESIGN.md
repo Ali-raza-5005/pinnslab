@@ -428,7 +428,14 @@ tested against, and the only path that can score against a reference solution.
   push → bump tag → `pip install git+...@tag`. Kaggle notebooks are ~20 lines:
   install, load config, `pinnslab.training.run(cfg)`, save artifacts.
   Offline install: build wheel, upload as Kaggle Dataset, `pip install
-  --no-index --find-links=... pinnslab`.
+  --no-index --find-links=... pinnslab`. That wheel **carries its commit**
+  (`hatch_build.py` stamps `pinnslab/_build_info.py` at build time, and
+  `registry.provenance` reads it back as `git_source="build_stamp"`). Until
+  2026-08-28 it did not, and this path recorded `git_sha="unknown"` — rule 7
+  failing silently on exactly the platform where the session is gone by the
+  time anyone asks. Build the wheel from a **clean checkout at the tag**: the
+  stamp records `dirty` honestly, and a dirty wheel is not described by its
+  commit.
 - **2-GPU strategy**: do NOT reflexively use DDP — PINN nets are tiny, all-reduce
   costs more than it saves (<1.3×). Run two independent configs concurrently,
   one per GPU via `CUDA_VISIBLE_DEVICES`. True 2× on seed/ablation sweeps.

@@ -41,6 +41,20 @@ path = "pinnslab/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["pinnslab"]
 
+# Stamps the commit into the wheel so DESIGN.md §7's *offline* Kaggle install
+# ("build wheel, upload as Dataset, pip install --no-index") can still satisfy
+# CLAUDE.md rule 7. The online path gets it from PEP 610 direct_url.json and the
+# local path from the working tree; this is the third case. See hatch_build.py.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+# The sdist carries the hook itself, so a wheel built from an unpacked sdist
+# still tries — and reports "unknown" honestly when there is no repository.
+[tool.hatch.build.targets.sdist]
+include = ["pinnslab", "tests", "scripts", "examples", "hatch_build.py",
+           "pyproject.toml", "README.md", "DESIGN.md", "CLAUDE.md",
+           "CHANGELOG.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

@@ -9,9 +9,20 @@ Resolving the git SHA is the fiddly part, because the two situations differ:
 
 * **local development** — there is a working tree; ask git, and record whether it
   was dirty (a dirty tree means the SHA alone does not identify the code).
-* **Kaggle** — the package was installed with ``pip install git+...@tag`` and
-  there is no ``.git`` anywhere. PEP 610 ``direct_url.json`` records the commit
-  pip resolved the tag to, which is exactly what we need.
+* **Kaggle, online** — the package was installed with
+  ``pip install git+...@tag`` and there is no ``.git`` anywhere. PEP 610
+  ``direct_url.json`` records the commit pip resolved the tag to, which is
+  exactly what we need.
+* **Kaggle, offline** — DESIGN.md §7's fallback builds a wheel, uploads it as a
+  Dataset and installs with ``--no-index``. A plain wheel carries no VCS
+  metadata at all, so this reported ``"unknown"`` until 2026-08-28 — a result
+  row that could not name the code that produced it, on the platform where the
+  session is gone by the time anyone asks. ``hatch_build.py`` now stamps the
+  commit into the wheel and this module reads it back.
+
+The order matters and is deliberate: **working tree first, stamp last.** A
+developer with a checkout must never be told what some earlier build thought,
+and the stamp is gitignored so it cannot exist in a checkout anyway.
 """
 
 from __future__ import annotations
@@ -48,6 +59,9 @@ def git_info() -> tuple[str, bool, str]:
     if sha is not None:
         # An installed artifact cannot be dirty.
         return sha, False, "direct_url"
+    stamped = _sha_from_build_stamp()
+    if stamped is not None:
+        return stamped[0], stamped[1], "build_stamp"
     return "unknown", False, "unknown"
 
 
@@ -82,6 +96,24 @@ def _sha_from_direct_url() -> str | None:
     except json.JSONDecodeError:
         return None
     return commit or None
+
+
+def _sha_from_build_stamp() -> tuple[str, bool] | None:
+    """The commit ``hatch_build.py`` wrote into the wheel, if this is one.
+
+    Carries the build's dirty flag through rather than forcing it False: a
+    wheel built from a dirty tree is not described by its commit either, and
+    silently claiming otherwise is the failure this whole module exists to
+    avoid.
+    """
+    try:
+        from pinnslab import _build_info  # type: ignore[attr-defined]
+    except ImportError:
+        return None
+    commit = getattr(_build_info, "COMMIT", None)
+    if not commit:
+        return None
+    return str(commit), bool(getattr(_build_info, "DIRTY", False))
 
 
 def _git(cwd: Path, *args: str) -> str | None:

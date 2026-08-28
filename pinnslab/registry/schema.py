@@ -155,7 +155,11 @@ class Provenance(Spec):
     pinnslab_version: str
     git_sha: str
     git_dirty: bool
-    git_source: str  # how the sha was resolved: "git" | "direct_url" | "unknown"
+    #: How the sha was resolved: "git" (a working tree), "direct_url" (PEP 610,
+    #: i.e. pip install git+...@tag), "build_stamp" (hatch_build.py wrote it
+    #: into an offline wheel), or "unknown" (none of the three could answer —
+    #: a row that cannot name its code, and worth noticing).
+    git_source: str
     gpu_name: str
     device_profile: str
     dtype: str

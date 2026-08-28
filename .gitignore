@@ -12,6 +12,8 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+# Written into the wheel by hatch_build.py; never in a source checkout.
+pinnslab/_build_info.py
 
 .venv/
 venv/

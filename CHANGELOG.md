@@ -115,6 +115,20 @@ this is the last moment that was true.
 - A population-size guard in `_population_residual`: a residual built for P
   candidates now refuses points for P′, instead of broadcasting a
   one-candidate call into P rows.
+- **The offline Kaggle wheel now carries its commit.** DESIGN.md §7's fallback
+  (`build wheel → Kaggle Dataset → pip install --no-index`) has no working tree
+  and no PEP 610 metadata, so provenance came out `git_sha="unknown"` — rule 7
+  failing silently on the platform where the session is gone by the time anyone
+  asks. `hatch_build.py` stamps `pinnslab/_build_info.py` at build time and
+  `registry.provenance` reads it back as a third route, `git_source =
+  "build_stamp"`, consulted **last** so a working tree always wins. The stamp is
+  gitignored and removed after the build. Verified end to end: a wheel installed
+  with `--no-index` into a clean venv reports the right SHA and its dirty flag.
+- Verified the pip-install workflow itself, from outside the checkout: install
+  from `git+...@main`, a config and a `@register_sampler` living in a mock paper
+  repo, a real Burgers run — provenance resolved via `direct_url`, version
+  0.3.0, correct SHA. `README.md` gains a "Starting a paper repo" section for
+  that flow.
 
 ### Changed
 
