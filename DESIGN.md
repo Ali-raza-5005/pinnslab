@@ -326,6 +326,31 @@ abstraction was added, and none is needed. Worked example:
 - **`torch.compile` OFF by default**, behind a config flag. Double-backward
   through compiled graphs breaks silently across versions. Golden tests run it
   both on and off.
+- **The collocation cloud is keyed on the sampling, not on the config**
+  (decided 2026-08-29, `v0.5.0`). `Trainer`'s sampling stream derives from
+  `cfg.sampling_identity_hash()` over `("problem", "sampling", "dtype")`, not
+  from the full `config_hash`. The full identity covers `stages`, so appending
+  a stage redrew the cloud every *earlier* stage had trained on, and
+  `[adam]` vs `[adam, lbfgs]` — §12's canonical hybrid — was not an ablation
+  but two different experiments agreeing on every visible field. Measured on
+  Burgers at nu=0.01/pi, seed 100, otherwise identical: rel-L2 **0.1405 vs
+  0.5644** at the end of the identical Adam stages.
+
+  The old behaviour was unbiased, not wrong: both conditions drew from the same
+  distribution of clouds. What it cost was *variance* — 4x here, against effect
+  sizes of 1.5-3x — and variance that pairing removes for free, where removing
+  it with seeds instead costs 10-100x the compute. The general rule this
+  instantiates: **a quantity should be keyed on what legitimately determines
+  it, not on whatever hash is nearest to hand.** `identity_hash` answers "is
+  this the same experiment"; it is the wrong question to ask about a point
+  cloud.
+
+  Pinned by `tests/unit/test_sampling_identity.py`, which asserts *both*
+  directions — schedule, architecture, loss weights and name keep the draw;
+  seed, point counts, strategy and physical constants still move it — because
+  the first half alone is satisfied by a trainer that hands every config one
+  cloud.
+
 - **L-BFGS checkpoints cleanly — measured, not assumed.** `torch.optim.LBFGS` is
   full-batch and closure-based, but its curvature history (`old_dirs`,
   `old_stps`, `ro`, `H_diag`, `prev_flat_grad`, `d`, `t`) *is* in `state_dict`,

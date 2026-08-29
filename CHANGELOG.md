@@ -4,6 +4,65 @@ Notable changes per tag. A paper pins a tag (DESIGN.md §2), so what matters her
 is what would change a *result*: anything that moves numbers, invalidates a
 config hash, or changes what a checkpoint can be resumed from.
 
+## v0.5.0 — 2026-08-29
+
+The collocation cloud stops depending on how a run is optimised. Driven by
+paper 1 again, and by a measurement: an optimizer-schedule ablation was not an
+ablation.
+
+**This changes numbers.** Every run's initial cloud differs from v0.4.0, so no
+v0.4.0 result is bit-reproducible under this tag. That is the whole point of
+pinning a tag (DESIGN.md §2); nothing published is affected, because nothing is
+published. Config hashes are unchanged — `identity_hash()` is untouched, so a
+v0.4.0 run directory is still found and still resumed by the same id. A
+**checkpoint written by v0.4.0 must not be resumed under v0.5.0**: it carries
+the old cloud in its payload, so it would continue correctly, but a run half
+of which used one draw and half another is not a run anyone should report.
+Start those again.
+
+### Changed
+
+- **`Trainer`'s sampling stream is keyed on `cfg.sampling_identity_hash()`**,
+  not on `run.config_hash`. The full config identity covers `stages`, so
+  appending a stage redrew the cloud that every stage *before* it had trained
+  on, and
+
+      stages: [adam 15000]
+      stages: [adam 15000, lbfgs 500]
+
+  did not share their Adam phase. They were two different experiments agreeing
+  on every field a reader would check — the failure was invisible, and it
+  landed squarely on "Adam → L-BFGS", which DESIGN.md §12 calls the canonical
+  hybrid.
+
+  Measured on Burgers at nu=0.01/pi, seed 100, identical architecture, point
+  counts, optimizer, learning rate and step count, differing only by an
+  appended L-BFGS stage — rel-L2 at the end of the *identical* Adam stages:
+
+  | condition | rel-L2 after 15000 Adam steps |
+  | --- | --- |
+  | `stages: [adam]` | 0.1405 |
+  | `stages: [adam, lbfgs]` | 0.5644 |
+
+  A 4x spread from the draw alone. The old behaviour was never *biased* — both
+  conditions drew from the same distribution of clouds, so the comparison was
+  valid and merely noisy — but it was noise that pairing removes for free,
+  where removing it by adding seeds instead costs one to two orders of
+  magnitude more compute.
+
+### Added
+
+- **`RunConfig.sampling_identity_hash()`** and **`SAMPLING_IDENTITY =
+  ("problem", "sampling", "dtype")`** — the fields that decide what a
+  legitimate cloud is: the geometry and constants, the groups and counts and
+  strategies, and the precision the points are drawn in. Everything else
+  describes what is *done* with the cloud, not what it may be.
+- **`tests/unit/test_sampling_identity.py`** — pins both halves, because
+  asserting only the first would be satisfied by a trainer that gave every
+  config one cloud: changing the schedule, the architecture, the loss weights
+  or the name keeps the draw; changing the seed, the point counts, the strategy
+  or a physical constant still moves it.
+
 ## v0.4.0 — 2026-08-29
 
 The optimizer seam becomes a capability protocol. Driven by paper 1 (CSO over

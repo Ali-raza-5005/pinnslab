@@ -52,6 +52,33 @@ from pinnslab.registry.schema import MetricSchedule, Spec
 #: Fields that describe how a run is operated, not what condition it tests.
 HASH_EXCLUDE = frozenset({"name", "tags", "seed", "device", "logging", "checkpoint"})
 
+#: The fields that decide what a *legitimate collocation cloud* is.
+#:
+#: Separate from the full config identity on purpose (added 2026-08-29). The
+#: trainer's sampling stream used to be derived from ``config_hash``, which
+#: covers ``stages``, ``nets``, ``weighting`` and ``eval`` as well — so
+#: appending an L-BFGS stage changed the cloud that the *Adam* stage before it
+#: trained on, and
+#:
+#:     stages: [adam 15000]
+#:     stages: [adam 15000, lbfgs 500]
+#:
+#: were not an ablation of "does L-BFGS help" but two different experiments
+#: agreeing on every field a reader would check. Measured on Burgers at
+#: nu=0.01/pi, seed 100, otherwise identical: rel-L2 **0.1405 vs 0.5644** at the
+#: end of the identical Adam stages — a 4x spread from the draw alone, far
+#: larger than the effects such a comparison exists to measure.
+#:
+#: It was never *biased* (both conditions draw from the same distribution of
+#: clouds), so the old behaviour cost only variance — but variance that pairing
+#: removes for free, at 10-100x the compute to recover by seeds instead.
+#:
+#: What belongs here is what genuinely determines a valid cloud: the geometry
+#: and constants (``problem``), the groups and counts and strategies
+#: (``sampling``), and the precision the points are drawn in (``dtype``).
+#: Everything else describes what is *done* with the cloud, not what it may be.
+SAMPLING_IDENTITY = ("problem", "sampling", "dtype")
+
 Scalar = float | int | bool | str
 
 
@@ -354,6 +381,16 @@ class RunConfig(Spec):
     def total_steps(self) -> int:
         return sum(stage.steps for stage in self.stages)
 
+    def sampling_identity_hash(self) -> str:
+        """Hash of the fields that determine a legitimate collocation cloud.
+
+        Two runs of one seed that differ only in how they are *optimised* share
+        a cloud; two that differ in geometry, point counts, sampling strategy or
+        precision do not. See :data:`SAMPLING_IDENTITY`.
+        """
+        payload = self.model_dump(mode="json")
+        return config_hash({key: payload[key] for key in SAMPLING_IDENTITY})
+
     def identity(self) -> dict[str, Any]:
         """The JSON-native subset of the config that defines the condition."""
         payload = self.model_dump(mode="json")
@@ -385,6 +422,7 @@ def dump_config(cfg: RunConfig, path: str | Path) -> None:
 
 __all__ = [
     "HASH_EXCLUDE",
+    "SAMPLING_IDENTITY",
     "CheckpointSpec",
     "EvalSpec",
     "LoggingSpec",

@@ -158,8 +158,23 @@ class Trainer:
 
         # A dedicated stream so that sampling reproducibility does not depend on
         # how many global draws happened to occur beforehand.
+        #
+        # Keyed on the *sampling* identity, not the whole config hash (changed
+        # 2026-08-29). Deriving it from `run.config_hash` meant `stages` was in
+        # the key, so appending a stage redrew the cloud that every stage before
+        # it had trained on: `[adam]` and `[adam, lbfgs]` did not share their
+        # Adam phase, and were therefore not an ablation of "does L-BFGS help"
+        # despite agreeing on every field a reader would check. Measured on
+        # Burgers at nu=0.01/pi, seed 100, otherwise identical: rel-L2 0.1405 vs
+        # 0.5644 at the end of the identical Adam stages.
+        #
+        # Now two runs of one seed that differ only in how they are optimised
+        # share a cloud exactly, and an optimizer comparison is paired rather
+        # than merely unbiased. See RunConfig.SAMPLING_IDENTITY for what still
+        # legitimately changes the draw.
         self.generator = make_generator(
-            derive_seed(cfg.seed, "trainer", run.config_hash), device="cpu"
+            derive_seed(cfg.seed, "trainer", cfg.sampling_identity_hash()),
+            device="cpu",
         )
         self.state = TrainState(
             cfg=cfg,
