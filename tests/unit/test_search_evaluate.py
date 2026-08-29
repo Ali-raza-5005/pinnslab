@@ -142,6 +142,7 @@ def _objective_the_slow_way(cfg: RunConfig) -> float:
     """The same loss through the single-run assembly, one candidate at a time."""
     from pinnslab.training.build import assemble
     from pinnslab.utils.device import configure_runtime
+    from pinnslab.utils.seeding import derive_seed, make_generator
 
     ctx = configure_runtime(cfg)
     part = assemble(cfg, ctx)
@@ -150,7 +151,14 @@ def _objective_the_slow_way(cfg: RunConfig) -> float:
         def __init__(self):
             self.nets = part.nets
             self.extra_params = part.extra_params
-            self.generator = torch.Generator().manual_seed(cfg.seed)
+            # Derived the way ``Trainer`` derives it, not the way the batched
+            # path happens to. This line used to read
+            # ``torch.Generator().manual_seed(cfg.seed)``, mirroring the
+            # evaluator instead of the oracle, so the two agreed on a cloud that
+            # a reproduction run would never draw.
+            self.generator = make_generator(
+                derive_seed(cfg.seed, "trainer", cfg.identity_hash()), device="cpu"
+            )
             self.dtype, self.device = ctx.dtype, ctx.device
             self.points: dict = {}
             self.scratch: dict = {}
@@ -168,6 +176,47 @@ def _objective_the_slow_way(cfg: RunConfig) -> float:
     # So the test passed while pinning the bug, because both sides computed the
     # same wrong number. Calling the real object is what makes this an oracle.
     return float(part.weighting(residuals, state).detach())
+
+
+def test_both_evaluators_draw_the_same_collocation_cloud():
+    """The invariant behind the agreement test above, asserted on its own.
+
+    The objective test would also fail if the clouds diverged, but it would fail
+    looking like a residual bug. Until 2026-08-29 they *did* diverge — the
+    batched path seeded from ``cfg.seed`` and the trainer from
+    ``derive_seed(seed, "trainer", config_hash)`` — and the consequence was
+    narrow but sharp: rerunning a search winner sequentially would not reproduce
+    the fitness the search recorded for it, so a batched number could not be
+    quoted in a paper and defended.
+    """
+    from pinnslab.search.evaluate import _stack_points
+    from pinnslab.training.build import assemble
+    from pinnslab.utils.device import configure_runtime
+    from pinnslab.utils.seeding import derive_seed, make_generator
+
+    cfg = base_config(seed=5)
+    ctx = configure_runtime(cfg)
+
+    stacked, offsets = _stack_points([assemble(cfg, ctx)], [cfg], ctx)
+
+    part = assemble(cfg, ctx)
+
+    class State:
+        nets = part.nets
+        extra_params = part.extra_params
+        generator = make_generator(
+            derive_seed(cfg.seed, "trainer", cfg.identity_hash()), device="cpu"
+        )
+        dtype, device = ctx.dtype, ctx.device
+        points: dict = {}
+        scratch: dict = {}
+        step = 0
+
+    state = State()
+    part.on_resample(state)
+
+    for name, where in offsets.items():
+        assert torch.equal(stacked[0][where], state.points[name]), name
 
 
 def test_the_batched_path_trains_every_candidate():

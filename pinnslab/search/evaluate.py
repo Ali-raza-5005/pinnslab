@@ -49,6 +49,7 @@ from pinnslab.search.spec import FitnessSpec
 from pinnslab.training.build import assemble, build_trainer
 from pinnslab.utils.device import RuntimeContext, configure_runtime
 from pinnslab.utils.logging import get_logger
+from pinnslab.utils.seeding import derive_seed, make_generator
 
 log = get_logger(__name__)
 
@@ -177,13 +178,24 @@ def _stack_points(
     cloud is drawn **once**: :func:`train_population` does not resample, so a
     search whose subject is *resampling* (rather than the initial distribution)
     belongs in :class:`SequentialEvaluator`.
+
+    The generator is derived exactly as ``Trainer`` derives its own —
+    ``derive_seed(seed, "trainer", identity_hash())`` — and not from ``cfg.seed``
+    directly (fixed 2026-08-29). It used to be
+    ``torch.Generator().manual_seed(cfg.seed)``, which meant the two evaluators
+    drew *different* clouds for one config: harmless for ranking, but it made
+    "rerun the winner sequentially and you get the search's number" false, and
+    the whole reason :class:`SequentialEvaluator` is called the oracle is that
+    the batched path is supposed to be reproducible through it.
     """
     clouds, layouts = [], []
     for part, cfg in zip(parts, configs, strict=True):
         state = _EnsembleState(
             part.nets,
             part.extra_params,
-            torch.Generator().manual_seed(cfg.seed),
+            make_generator(
+                derive_seed(cfg.seed, "trainer", cfg.identity_hash()), device="cpu"
+            ),
             ctx.dtype,
             ctx.device,
         )

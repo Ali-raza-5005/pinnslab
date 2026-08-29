@@ -4,6 +4,84 @@ Notable changes per tag. A paper pins a tag (DESIGN.md §2), so what matters her
 is what would change a *result*: anything that moves numbers, invalidates a
 config hash, or changes what a checkpoint can be resumed from.
 
+## v0.4.0 — 2026-08-29
+
+The optimizer seam becomes a capability protocol. Driven by paper 1 (CSO over
+network weights), which could not be expressed at all: `Trainer` chose how to
+drive an optimizer by its concrete type, so a registered derivative-free method
+was handed to the first-order path and never saw the objective.
+
+**No config hash changes and no existing behaviour moves** for a gradient-based
+run — Adam and L-BFGS take exactly the path they took in v0.3.0. One number does
+change: the batched evaluator's collocation cloud (below). Nothing on disk is
+invalidated; no results exist yet.
+
+### Added
+
+- **`requires_closure` / `uses_gradients`** — two optional attributes an
+  optimizer may declare, read by `training/optimizers.py`'s predicates of the
+  same name. `requires_closure=True` makes the loop call `step(closure)`;
+  `uses_gradients=False` makes it skip `backward()` entirely. A derivative-free
+  optimizer is now a genuine `@register_optimizer` with zero edits to core, and
+  `stages: [{cso}, {adam}, {lbfgs}]` is one config, one hash, one `Run`, with
+  staging, checkpointing, tracing, timing, divergence handling and
+  time-to-target unchanged. DESIGN.md §4.
+- **`Trainer._reject_undrivable`** — the refusals, added before the capability
+  they guard (DESIGN.md §6 CORRECTION 2's rule). Refused: a closure-based
+  optimizer sharing a stage; `direction: max` on one (no gradient exists to
+  flip); `max_grad_norm` on a derivative-free one (no gradient exists to clip);
+  `uses_gradients=False` without `requires_closure=True` (the optimizer could
+  never see the loss); and a closure-based `step()` returning `None` (which
+  would put `nan` in the trace and the divergence check).
+- **`tests/unit/test_optimizer_seam.py`** — 11 tests over a toy population
+  optimizer with the shape of CSO: end-to-end training, composition with a
+  gradient stage, bit-exact resume of a population through the ordinary
+  checkpoint, all five refusals, and the capability predicates themselves.
+- **DESIGN.md §4 conformance item 8** — a derivative-free optimizer over network
+  weights. Item 6 ("Adam→L-BFGS") passed while this seam was type-gated, because
+  every example on the list was gradient-based.
+
+### Fixed
+
+- **The two search evaluators drew different collocation clouds for one
+  config.** `SequentialEvaluator` seeds from `derive_seed(seed, "trainer",
+  config_hash)`; `_stack_points` used `torch.Generator().manual_seed(cfg.seed)`.
+  Harmless for ranking — which is why the v0.3.0 audit filed it as a limitation
+  rather than a bug — but it made "rerun the winner sequentially and you get the
+  search's number" **false**, so no batched fitness could be quoted in a paper
+  and defended. Both now derive identically. **This changes every batched
+  fitness value.**
+- **The oracle in `test_batched_and_sequential_agree_on_the_training_objective`
+  mirrored the evaluator, not the trainer.** Its state used
+  `manual_seed(cfg.seed)`, so it agreed with the batched path on a cloud no
+  reproduction run would ever draw. Now derived like `Trainer`. This is the
+  *fourth* instance in this repo of a test passing on a premise that cannot
+  occur; the previous three are named in v0.2.0 and v0.3.0.
+
+### Documented, not changed
+
+- **A trace point can mix two parameter vectors.** `_step_first_order` reports
+  the loss at the parameters it is about to update, so step *k*'s `loss` is
+  θ(k−1) while its metrics and checkpoint are θ(k). Fixing it costs a second
+  forward pass on every step of every run, so it is kept — but it is now pinned
+  by `test_the_first_order_path_still_reports_the_pre_update_loss` rather than
+  recorded only in an audit file. The closure path does **not** inherit it: a
+  closure-based optimizer must make its last closure call at the parameters it
+  leaves installed, so `loss` and `residual/<name>` both describe θ(k).
+
+### Not done, on purpose
+
+- **No batched fitness path for population optimizers.** `Ensemble` would make P
+  candidates cheaper, but the measured CPU speedup (1.7-3.4x) does not change a
+  conclusion, and the primary compute-parity currency for this comparison should
+  be residual evaluations — implementation-independent — with wall-clock
+  secondary and its unoptimised status stated. Adding it would also put CSO on
+  the narrow path and require a new set of refusals. DESIGN.md §6.
+- **No new benchmarks, architectures or weightings.** Allen-Cahn, Helmholtz,
+  KdV, NS and wave remain unimplemented; per the promotion rule they are born in
+  a paper repo's `src/method/` and enter here only when a second paper needs
+  them.
+
 ## v0.3.0 — 2026-08-28
 
 A research-readiness audit before the first real experiments. The bootstrap ran

@@ -73,9 +73,15 @@ checkpointed, `scripts/{run,run_sweep,run_search,benchmark_population}.py` and
 
 Audited for research use 2026-08-28 (**v0.3.0**): five silent-wrong-number bugs
 fixed, four of them in the batched search evaluator. `scripts/validate_gpu.py`
-and `tests/unit/test_algorithms_on_benchmarks.py` added. 497 tests.
+and `tests/unit/test_algorithms_on_benchmarks.py` added.
 
-Five things to read before touching the relevant area, because each records a
+Optimizer seam generalised 2026-08-29 (**v0.4.0**), the first change paper 1
+forced: `Trainer` drove optimizers by `isinstance(..., LBFGS)`, so a registered
+derivative-free optimizer never saw the objective. Now a capability protocol
+(`requires_closure`, `uses_gradients`) with five refusals in
+`Trainer._reject_undrivable`. 514 tests.
+
+Six things to read before touching the relevant area, because each records a
 *measurement* that overrode an earlier design:
 - **DESIGN.md §6** — the population evaluator is a **batched graph, not
   `vmap`**; `vmap` cannot host a PINN residual. Residuals are rank-agnostic
@@ -85,6 +91,12 @@ Five things to read before touching the relevant area, because each records a
   and must *refuse* what it cannot express rather than approximate it. It
   silently optimised a different objective than the config declared until
   2026-08-28. If you add anything to that path, add its refusal first.
+- **DESIGN.md §4, the optimizer seam** — how an optimizer is *driven* is read
+  off two optional attributes, never off its type. A closure-based optimizer
+  owes two contracts: `step()` returns the objective value, and its **last**
+  closure call is at the parameters it leaves installed. Add the refusal before
+  the capability. There is no `bind_objective` hook and none is needed — the
+  optimizer already owns its parameters.
 - **DESIGN.md §7** — the queue derives cell status from the results directory
   instead of writing a status column, and partitions workers statically.
 - **DESIGN.md §8** — figure conventions and the palette; SciencePlots' default
@@ -95,8 +107,12 @@ Five things to read before touching the relevant area, because each records a
   crashed on every real results directory while its test passed on a fixture
   where all seeds ran at identical speed.
 
-**Next: P0 on paper 1 (sampling).** Infrastructure work from here is
-paper-driven — log every core edit a paper task forces in `FRICTION.md`.
+**Next: P0 on paper 1 (CSO optimizer).** Infrastructure work from here is
+paper-driven — log every core edit a paper task forces in `FRICTION.md`. The CSO
+itself is born in `paper-01-cso-optimizer/src/method/` under the promotion rule,
+as a `@register_optimizer` declaring `requires_closure=True` and
+`uses_gradients=False`; `tests/unit/test_optimizer_seam.py::ToySwarm` is the
+reference shape. It enters `pinnslab` only when a second paper needs it.
 
 **Before the first GPU sweep**: run `python scripts/validate_gpu.py` on the
 Kaggle session and put its numbers into LOG.md and DESIGN.md §5/§6. Nothing in

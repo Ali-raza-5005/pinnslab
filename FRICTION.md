@@ -34,3 +34,21 @@ exercised* — a registry with no lookup, a `resample_every` field the queue
 refused, a figure axis whose test used data that cannot occur. The lesson for
 the next abstraction is not that these were badly designed; it is that an
 extension point nobody has extended from outside is not yet an extension point.
+
+```
+2026-08-29 | paper-01 | register a competitive-swarm optimizer (CSO over network weights) and schedule it as `stages: [{cso}, {adam}, {lbfgs}]` | Trainer chose how to drive an optimizer with `isinstance(opt, torch.optim.LBFGS)`, so a registered derivative-free optimizer was driven by the first-order path, which calls `step()` with no objective and no gradients — it could be configured and run to completion without ever seeing the loss, and nothing raised. Replaced the type check with a two-attribute capability protocol (`requires_closure`, `uses_gradients`) in training/optimizers.py, plus four refusals in Trainer._reject_undrivable.
+```
+
+The fifth entry is the same lesson as the first four, arriving on a different
+axis. `OPTIMIZERS` was a real registry that `build_optimizer` really read — so
+unlike `SAMPLERS`, registration worked. What did not work was everything
+*downstream* of registration: the loop still branched on a concrete type, so the
+registry could accept an optimizer the loop could not drive. **A registry that
+accepts what the consumer cannot consume is the same failure as a registry
+nobody reads**, one layer further in, and it is harder to see because the
+extension point appears to work right up until the run produces numbers.
+
+Worth noting against DESIGN.md §4's conformance list: item 6 is "sequential /
+staged training (Adam->L-BFGS, ...)", and the list was checked and passed. It
+passed because every example on it is gradient-based. The conformance test
+catches a missing seam; it does not catch a seam that is present but type-gated.

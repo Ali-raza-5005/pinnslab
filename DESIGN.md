@@ -181,6 +181,70 @@ sketch's intent:
 2. **Optimizers are a `list` with param selectors and a direction**, not a
    single object. Makes min-max / self-adaptive schemes fall out for free.
 
+### The optimizer seam is a capability protocol, not a type switch (2026-08-29)
+
+`Trainer` decided how to drive an optimizer with
+`isinstance(opt, torch.optim.LBFGS)`: closure-based if L-BFGS, first-order
+otherwise. That is a hole in "extension by registration". `@register_optimizer`
+would accept a derivative-free method, `build_optimizer` would build it, the
+config would validate — and then the loop would call `step()` with no objective
+and no gradients. It could run to completion having never seen the loss. Nothing
+raised, and the result row would look ordinary.
+
+Optimizer schedules are one of §6's four research directions, so this is on the
+main line. An optimizer now declares what it needs and the loop reads *that*:
+
+```python
+class CSO(torch.optim.Optimizer):
+    requires_closure = True    # drive me with step(closure), not step()
+    uses_gradients = False     # and do not bother with backward()
+```
+
+`training/optimizers.py` holds the two predicates. One `isinstance` remains, for
+`torch.optim.LBFGS`, which predates the protocol and which we do not monkey-patch;
+it is a compatibility shim, not a statement about what may exist.
+
+**There is deliberately no second "bind the objective" hook.** The optimizer
+already owns its parameter tensors, so a population method writes candidate *p*
+into `param.data` and calls the closure to score it. One mechanism serves the
+line-search case and the population case.
+
+**The refusals are the load-bearing half** (§6 CORRECTION 2's rule, applied
+here). `Trainer._reject_undrivable` refuses, before any step runs: a
+closure-based optimizer sharing a stage with another optimizer; `direction: max`
+on a closure-based optimizer (ascent is implemented by flipping a gradient this
+loop computed, and there is none to flip); `max_grad_norm` on a derivative-free
+one (no gradient exists to clip, and accepting the field would report a
+constraint the run does not have); `uses_gradients=False` without
+`requires_closure=True` (the optimizer could not see the objective at all); and
+a closure-based `step()` returning `None` (the loop has no other source for the
+step's loss, and would write `nan` into the trace and the divergence check).
+
+**Two contracts bind a closure-based optimizer.** It must return the objective
+value, and **its last closure call must be at the parameters it leaves
+installed** — the loop takes both `loss` and the per-residual trace from that
+final evaluation. The second is what keeps a derivative-free step free of the
+first-order path's off-by-one (below); for a population method it costs one
+extra evaluation out of P.
+
+### Which loss belongs to which parameters
+
+`_step_first_order` evaluates the loss at the parameters it is **about to
+update**, so the trace point labelled step *k* carries `loss` at θ(k−1) while
+its `eval_fn` metrics and its checkpoint are at θ(k). With `best_metric="loss"`,
+`save_best` stores θ(k) scored by a loss θ(k) never produced. Step 0 is the only
+clean point.
+
+This is **kept, not fixed**: the alternative is a second forward pass on every
+step of every run in the repo to relabel a quantity that is already monotone in
+the same direction. It is pinned by
+`test_the_first_order_path_still_reports_the_pre_update_loss`, so it is a
+recorded property with a failing test behind any silent change rather than
+folklore. The closure path does not inherit it (contract 2 above). L-BFGS is the
+exception the protocol cannot fix from outside: it returns the loss from its
+*first* closure call, so its `loss` is pre-step while its `residual/<name>` comes
+from the last line-search probe.
+
 ### Conformance test — the substitute for predicting the future
 Before finalizing `Trainer`, confirm all SEVEN are expressible **without editing
 core**:
@@ -191,6 +255,12 @@ core**:
 5. Hard constraints (output transform)
 6. Sequential/staged training (Adam→L-BFGS, time-marching, curriculum)
 7. Coupled systems (vector outputs, multiple residuals, different scales)
+8. **A derivative-free optimizer over network weights** (CSO/PSO/DE), alone and
+   staged with gradient optimizers — added 2026-08-29, after item 6 passed while
+   the seam was still type-gated (see above). Item 6's examples are all
+   gradient-based, so the list confirmed a seam that was present but would only
+   drive one kind of thing. **A conformance item must name the case that is
+   structurally different, not another instance of the case that works.**
 
 If any requires editing core, the seams are wrong.
 
@@ -377,6 +447,17 @@ batched path must refuse anything it cannot express, never approximate it.**
 `SequentialEvaluator` is the oracle precisely because it has no such gap, and
 "use SequentialEvaluator" is an acceptable answer to any of these.
 
+**Fifth, found 2026-08-29: the two evaluators drew different collocation
+clouds.** `SequentialEvaluator` seeds from `derive_seed(seed, "trainer",
+config_hash)` — the trainer's own derivation — while `_stack_points` used
+`torch.Generator().manual_seed(cfg.seed)`. Harmless for *ranking*, which is why
+it survived the audit, but it made the sentence above false in one specific way:
+rerunning a search winner sequentially would not reproduce the fitness the
+search recorded for it, so no batched number could be quoted in a paper and
+defended. Both now derive identically, and
+`test_both_evaluators_draw_the_same_collocation_cloud` asserts the clouds
+element-wise rather than leaving it implied by an objective comparison.
+
 The deeper lesson is about the tests. `test_batched_and_sequential_agree_on_
 the_training_objective` called itself "THE test of this module" and computed its
 oracle by *re-implementing* the pooled mean instead of calling the config's
@@ -404,6 +485,31 @@ for the comparison to be fair, so a sampling search at fixed budget is the
 correct default and *where* the points go is the question. Varying the count
 runs through `SequentialEvaluator`, which is also the oracle the batched path is
 tested against, and the only path that can score against a reference solution.
+
+### A derivative-free optimizer runs on the single-net path first (2026-08-29)
+
+Weight-space search — CSO, PSO, DE over network *weights* rather than over
+`RunConfig` fields — arrives through the optimizer seam of §4, not through this
+layer. `search/` optimises config paths (unit-cube vectors → validated configs);
+weight-space search optimises tens of thousands of parameters and belongs inside
+a stage. A registered `@register_optimizer("cso")` therefore gets staging,
+checkpointing, tracing, timing, divergence handling and time-to-target for free,
+under one config hash and one `Run`.
+
+The cost is that P candidates are P sequential forward passes, and the closure
+cannot be wrapped in `torch.no_grad()` — a PINN residual differentiates the
+network with respect to its *inputs*, so grad mode has to stay on and the
+parameter side of the graph is built and discarded on each evaluation. What
+`uses_gradients=False` saves is the backward pass, not the graph.
+
+`Ensemble` is the obvious accelerant and is **deliberately not wired in yet**.
+The measured CPU speedup is 1.7-3.4x (above), which does not change a
+conclusion; and the honest compute-parity currency for comparing a population
+method against Adam is **residual evaluations**, which is implementation-
+independent, with wall-clock reported as a secondary axis and the unoptimised
+status stated. Build the batched fitness path only when a result depends on it —
+and note that doing so puts CSO on the narrow path, so it inherits every refusal
+in `_reject_unsupported` and needs its own.
 
 ### Three things not to skip
 1. **Outer-loop checkpointing**: population, generation counter, archive, AND

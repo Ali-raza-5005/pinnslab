@@ -5,6 +5,49 @@ phase, days left in timebox. Newest first.
 
 ---
 
+## 2026-08-29 — the optimizer seam, forced by paper 1
+
+- **Ran**: generalised the optimizer seam and tagged v0.4.0. Suite 497 → 514
+  green in ~41s, ruff clean. First core edit driven by a paper rather than by
+  the bootstrap plan, and the first entry in `FRICTION.md` that is not from the
+  `examples/` dry run.
+- **Learned (the one that matters)**: paper 1 is CSO over network *weights*, and
+  it could not be expressed at all. `Trainer` chose how to drive an optimizer
+  with `isinstance(opt, torch.optim.LBFGS)`, so a derivative-free optimizer
+  could be registered, validated, configured and run to completion **without
+  ever seeing the loss**, and nothing would raise. `OPTIMIZERS` was a registry
+  that `build_optimizer` genuinely read — registration worked; what failed was
+  everything downstream of it. **A registry that accepts what the consumer
+  cannot consume is the same failure as a registry nobody reads**, one layer in,
+  and harder to see because it looks like it works until the numbers arrive.
+- **Learned (about the conformance list)**: DESIGN.md §4's seven-item list was
+  checked and passed, and item 6 is "Adam→L-BFGS". It passed because every
+  example on it is gradient-based. The list catches a *missing* seam; it does
+  not catch a seam that is present but type-gated. Added item 8 — a
+  derivative-free optimizer over network weights — because a conformance item
+  has to name the structurally different case, not another instance of the case
+  that already works.
+- **Learned (fourth time now)**: fixing the two evaluators' collocation seeding
+  broke `test_batched_and_sequential_agree_on_the_training_objective` — because
+  its oracle seeded itself the way the *evaluator* does, not the way `Trainer`
+  does. So the two sides agreed on a cloud no reproduction run would draw. Same
+  shape as the pooled-mean oracle, the `wall_time` fixture and the unread
+  `SAMPLERS`. The tell each time: the test mirrors the implementation instead of
+  the contract.
+- **Decided**: no batched fitness path for CSO yet. The measured CPU speedup
+  (1.7-3.4x) does not change a conclusion, and the primary compute-parity
+  currency should be **residual evaluations** — implementation-independent —
+  with wall-clock secondary and its unoptimised status stated. Building it now
+  would also put CSO on the narrow path and owe it a fresh set of refusals.
+- **Next**: P0 on paper 1. CSO is born in `paper-01-cso-optimizer/src/method/`
+  per the promotion rule, declaring `requires_closure=True` /
+  `uses_gradients=False`; `tests/unit/test_optimizer_seam.py::ToySwarm` is the
+  reference shape. Still owed before the first GPU sweep:
+  `scripts/validate_gpu.py` on Kaggle.
+- **Phase**: bootstrap complete; paper 1 P0. No timebox running yet.
+
+---
+
 ## 2026-08-28 — research-readiness audit before P0
 
 - **Ran**: a full audit of every module against the question "would this produce

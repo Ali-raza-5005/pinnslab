@@ -14,9 +14,32 @@ The load-bearing contract (DESIGN.md §4):
   min-max and self-adaptive schemes are expressible without touching this file.
 * ``residual_fn`` must be a deterministic function of ``state`` within a single
   step: read collocation points from ``state.points`` (populated by
-  ``on_resample``) rather than drawing fresh samples inline. L-BFGS's closure
-  can be invoked more than once per ``.step()`` (line search), and a stochastic
-  closure breaks the line search's assumptions.
+  ``on_resample``) rather than drawing fresh samples inline. A closure-based
+  optimizer invokes it more than once per ``.step()`` — L-BFGS's line search,
+  a population method's fitness evaluations — and a stochastic closure makes
+  those evaluations incomparable to each other.
+* how an optimizer is *driven* is read off the optimizer, not off its type. See
+  ``training/optimizers.py`` for the two-attribute capability protocol; the loop
+  branches on :func:`requires_closure` and :func:`uses_gradients` only.
+
+Which loss belongs to which parameters
+--------------------------------------
+The first-order path evaluates the loss at the parameters it is **about to
+update**, so the point labelled step *k* carries ``loss`` at θ(k−1) while its
+``eval_fn`` metrics and its checkpoint are at θ(k). Step 0 is the only clean
+point. This is deliberate — the alternative is a second forward pass per step,
+i.e. roughly double the cost of every run in the repo, to relabel a quantity
+that is already monotone in the same direction — but it is a real off-by-one and
+anything reading a trace should know it.
+
+The closure path does **not** inherit it. A closure-based optimizer is required
+to make its last closure call at the parameters it leaves installed, so both
+``loss`` and ``residual/<name>`` for step *k* describe θ(k). For a population
+method that costs one extra evaluation out of P and buys a fitness that actually
+belongs to the weights returned; ``search/population.py`` already works this way.
+L-BFGS is the partial exception the protocol cannot fix from outside: it returns
+the loss at the *first* closure call, so its ``loss`` is pre-step while its
+``residual/<name>`` is from the last line-search probe.
 
 Conformance (DESIGN.md §4): multiple networks, inverse-problem parameters,
 ascent optimizers, per-point weights, hard constraints via the caller's output
@@ -40,7 +63,11 @@ from pinnslab.registry.config import OptimizerSpec, RunConfig, StageSpec
 from pinnslab.registry.run import Run
 from pinnslab.registry.schema import ResultRow, RunStatus
 from pinnslab.training.checkpoint import CheckpointManager, CheckpointPayload
-from pinnslab.training.optimizers import build_optimizer
+from pinnslab.training.optimizers import (
+    build_optimizer,
+    requires_closure,
+    uses_gradients,
+)
 from pinnslab.utils.device import RuntimeContext
 from pinnslab.utils.logging import get_logger
 from pinnslab.utils.seeding import (
@@ -199,18 +226,63 @@ class Trainer:
                 )
             )
 
-        lbfgs = [g for g in groups if isinstance(g.optimizer, torch.optim.LBFGS)]
-        if lbfgs and len(groups) > 1:
-            raise ValueError(
-                f"stage {stage.name!r} pairs L-BFGS with another optimizer. "
-                "L-BFGS is closure-based and full-batch; it re-evaluates the "
-                "loss internally, so a concurrent ascent step would see a "
-                "different iterate than it stepped from. Give L-BFGS its own "
-                "stage."
-            )
-        if lbfgs and lbfgs[0].spec.direction != "min":
-            raise ValueError("L-BFGS supports direction='min' only")
+        self._reject_undrivable(stage, groups)
         return groups
+
+    @staticmethod
+    def _reject_undrivable(stage: StageSpec, groups: list[_OptimizerGroup]) -> None:
+        """Refuse every stage this loop cannot drive faithfully.
+
+        DESIGN.md §6 CORRECTION 2's rule, applied to the optimizer seam: a narrow
+        path must *refuse* what it cannot express rather than approximate it. Each
+        check below marks a config field that would otherwise be read, found
+        inapplicable, and silently dropped — which is how the batched evaluator
+        came to optimise a different objective than its config declared.
+        """
+        closure_based = [g for g in groups if requires_closure(g.optimizer)]
+        gradient_free = [g for g in groups if not uses_gradients(g.optimizer)]
+
+        if closure_based and len(groups) > 1:
+            names = sorted({g.spec.name for g in closure_based})
+            raise ValueError(
+                f"stage {stage.name!r} pairs a closure-based optimizer "
+                f"({', '.join(names)}) with another optimizer. A closure-based "
+                "optimizer re-evaluates the loss internally and moves the "
+                "parameters between those evaluations, so a concurrent step "
+                "would see a different iterate than the one it stepped from. "
+                "Give it its own stage."
+            )
+        for group in closure_based:
+            if group.spec.direction != "min":
+                raise ValueError(
+                    f"optimizer {group.spec.name!r} in stage {stage.name!r} is "
+                    "closure-based and so must have direction='min'. Ascent is "
+                    "implemented by flipping the sign of a gradient this loop "
+                    "computed; a closure-based optimizer computes its own search "
+                    "direction and never shows it to us, so there is nothing to "
+                    "flip. For a min-max scheme, put the ascent variables under a "
+                    "first-order optimizer in a stage of their own."
+                )
+        for group in gradient_free:
+            if not requires_closure(group.optimizer):
+                raise ValueError(
+                    f"optimizer {group.spec.name!r} in stage {stage.name!r} "
+                    "declares uses_gradients=False but not requires_closure=True. "
+                    "It would then be driven by the first-order path, which calls "
+                    "step() with no objective and no gradients — the optimizer "
+                    "could not see the loss at all. A derivative-free method must "
+                    "declare requires_closure=True (training/optimizers.py)."
+                )
+            if group.spec.max_grad_norm is not None:
+                raise ValueError(
+                    f"optimizer {group.spec.name!r} in stage {stage.name!r} sets "
+                    f"max_grad_norm={group.spec.max_grad_norm} but is "
+                    "derivative-free, so no gradient is ever computed for it to "
+                    "clip. Accepting the field would report a config that "
+                    "constrains the run in a way it does not. Remove it; to bound "
+                    "a derivative-free step, bound it in the optimizer's own "
+                    "options."
+                )
 
     # -- the loop -------------------------------------------------------------
 
@@ -244,9 +316,12 @@ class Trainer:
             step_in_stage = start_step_in_stage if resuming else 0
 
             if resuming:
-                # L-BFGS included: its curvature history round-trips through
-                # state_dict, so a mid-stage resume is bit-exact like any other
-                # (pinned by test_lbfgs_resume_is_bit_exact).
+                # Whatever the optimizer carries — Adam's moments, L-BFGS's
+                # curvature history, a population method's swarm and velocities —
+                # round-trips through its own state_dict, so a mid-stage resume
+                # is bit-exact for all three (pinned by
+                # test_lbfgs_resume_is_bit_exact and
+                # test_gradient_free_resume_is_bit_exact).
                 self._restore_optimizers(groups)
             else:
                 self._save(global_step, stage_index, 0)
@@ -327,8 +402,11 @@ class Trainer:
         )
 
     def _step(self, groups: list[_OptimizerGroup]) -> torch.Tensor:
-        if _uses_lbfgs(groups):
-            return self._step_lbfgs(groups[0])
+        # A stage is either entirely closure-based or entirely first-order;
+        # _reject_undrivable has already refused the mixture, so groups[0] is
+        # the whole stage on the closure branch.
+        if requires_closure(groups[0].optimizer):
+            return self._step_closure(groups[0])
         return self._step_first_order(groups)
 
     def _zero_grads(self) -> None:
@@ -342,6 +420,10 @@ class Trainer:
             param.grad = None
 
     def _step_first_order(self, groups: list[_OptimizerGroup]) -> torch.Tensor:
+        # Returns the loss at the parameters this step is about to *leave*, not
+        # the ones it produces — the module docstring's off-by-one. Do not
+        # "fix" it by re-evaluating after the step without measuring what the
+        # extra forward pass costs every run in the repo.
         self._zero_grads()
         loss = self._forward()
         loss.backward()
@@ -357,16 +439,52 @@ class Trainer:
             group.optimizer.step()
         return loss.detach()
 
-    def _step_lbfgs(self, group: _OptimizerGroup) -> torch.Tensor:
-        def closure() -> torch.Tensor:
-            self._zero_grads()
-            loss = self._forward()
-            loss.backward()
-            if group.spec.max_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(group.params, group.spec.max_grad_norm)
-            return loss
+    def _step_closure(self, group: _OptimizerGroup) -> torch.Tensor:
+        """One step of an optimizer that evaluates the objective itself.
 
-        return torch.as_tensor(group.optimizer.step(closure)).detach()
+        Two shapes of closure, because there are two reasons to want one. A
+        gradient-based method (L-BFGS) needs the backward pass on every probe.
+        A derivative-free method needs the *value* only, and the difference is
+        the whole point of ``uses_gradients``: scoring P candidates would
+        otherwise pay P backward passes it never reads.
+
+        The derivative-free closure is **not** wrapped in ``torch.no_grad()``,
+        which is the obvious optimisation and is wrong here. A PINN residual
+        differentiates the network with respect to its *inputs*
+        (``physics/diffops.py``), so grad mode has to stay on or every residual
+        raises. What we save is the backward pass, not the graph; the parameter
+        side of the graph is built and discarded on each evaluation. That is a
+        real cost of hosting a population method on the single-net path and it is
+        the thing a batched fitness path would fix (DESIGN.md §6).
+        """
+        if uses_gradients(group.optimizer):
+
+            def closure() -> torch.Tensor:
+                self._zero_grads()
+                loss = self._forward()
+                loss.backward()
+                if group.spec.max_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        group.params, group.spec.max_grad_norm
+                    )
+                return loss
+
+        else:
+            self._zero_grads()
+
+            def closure() -> torch.Tensor:
+                return self._forward().detach()
+
+        loss = group.optimizer.step(closure)
+        if loss is None:
+            raise ValueError(
+                f"optimizer {group.spec.name!r} is closure-based but its step() "
+                "returned None. The loop has no other source for this step's "
+                "loss, and accepting None would write nan into the trace and "
+                "into the divergence check. Return the objective value at the "
+                "parameters you leave installed (training/optimizers.py)."
+            )
+        return torch.as_tensor(loss).detach()
 
     def _forward(self) -> torch.Tensor:
         residuals = self.residual_fn(self.state)
@@ -627,10 +745,6 @@ def _hook_state(hook: HookFn | None) -> dict[str, Any]:
     """
     getter = getattr(hook, "state_dict", None)
     return dict(getter()) if callable(getter) else {}
-
-
-def _uses_lbfgs(groups: list[_OptimizerGroup]) -> bool:
-    return any(isinstance(g.optimizer, torch.optim.LBFGS) for g in groups)
 
 
 def _stage_key(stage: StageSpec) -> str:
