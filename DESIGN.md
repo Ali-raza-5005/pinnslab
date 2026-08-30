@@ -313,11 +313,18 @@ abstraction was added, and none is needed. Worked example:
 
 - **float64 default**: `torch.set_default_dtype(torch.float64)`. PINNs hit a
   float32 residual noise floor at ~1e-4–1e-5, exactly where papers claim wins.
-- **Precision-by-GPU rule** (Kaggle):
-  - **T4 ×2** → float32 work: hyperparam search, seed sweeps, ablations
-    (T4 FP64 is ~1/32 of FP32).
-  - **P100 ×1** → float64 work: final headline runs, machine-precision claims
-    (P100 FP64 ~1/2 of FP32).
+- **Precision-by-GPU rule** (Kaggle) — **MEASURED 2026-08-30; the P100 half is
+  now dead.** Kaggle's accelerator menu and Kaggle's docker image are versioned
+  separately and have drifted: the P100 is `sm_60`, the image's torch is built
+  for `sm_70`–`sm_120`, and every kernel launch on it fails with
+  `cudaErrorNoKernelImageForDevice`. There is no fp64-friendly accelerator left,
+  so float64 headline work runs on T4 and the rule below is what remains:
+  - **T4 ×2** → everything, at 0.249 TFLOP/s fp64 (measured; 98% of the 0.254
+    datasheet figure, so fp64 is *at* spec, not merely tolerable).
+  - Request the accelerator **explicitly** (`machine_shape` in kernel metadata).
+    A request that omits it gets one of Kaggle's choosing, which is how the
+    dead P100 was found — after an 11-minute queue.
+  - ~~**P100 ×1** → float64 work~~ (P100 FP64 ~1/2 of FP32, but unrunnable).
   - Record `dtype` and `device_profile` in every result row. Never mix
     precisions within a comparison group.
 - **diffops** (`physics/diffops.py`): one API, two backends — classic
@@ -397,7 +404,9 @@ class SearchSpec:
 Nested optimization: pop 30 × 100 gens = 3,000 inner trainings PER cell; ×seeds
 ×PDEs ×baselines → 1e4–1e5 trainings. Sequential on Kaggle quota = impossible.
 PINNs are tiny MLPs (pop 50 × 5k params = 250k total, nothing). Batch the whole
-population as one vmapped model → ~20–50× throughput on a T4.
+population as one vmapped model → **~10× throughput on a T4 (measured
+2026-08-30; the "20–50×" originally claimed here was never measured and is
+overstated by 2–5×)**.
 
 **This is structurally impossible through DeepXDE** (stateful OO Model). It's a
 core reason we build from scratch.
@@ -439,11 +448,16 @@ Three measured facts make it correct rather than merely convenient:
    parameter drift against P separate trainings after 25 steps: **1.1e-16**.
 3. **Speed — and the honest number.** On this CPU with a real Burgers residual
    (width 20, depth 3, N=512): 1.7× at P=4, 2.8× at P=8, **3.4× at P=16**,
-   falling to ~2.2× by P=50. The "20–50× on a T4" above is a *GPU* claim about
-   kernel-launch overhead dominating for tiny nets and is **untested — there is
-   no GPU here.** Do not put it in a paper until it is measured on the hardware
-   in question: compute parity is a reviewer defence and an unverified speedup
-   is a hole in it.
+   falling to ~2.2× by P=50. The "20–50× on a T4" above was a *GPU* claim about
+   kernel-launch overhead dominating for tiny nets, and was flagged here as
+   untested because there was no GPU.
+
+   **Measured on a Kaggle T4, 2026-08-30** (paper-01 E0, real Burgers residual,
+   width 20 depth 4, N=1150, float64): **9.68× at P=16, 10.48× at P=64, 10.57×
+   at P=128** — roughly 10×, flat in P. The claim was overstated by 2–5×. Quote
+   ~10×. The caution above was correct and is why the number was checked before
+   it reached a paper: compute parity is a reviewer defence and an unverified
+   speedup is a hole in it.
 
 ### CORRECTION 2 (audited 2026-08-28): the batched path is a *narrow* path
 

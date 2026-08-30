@@ -4,6 +4,44 @@ Notable changes per tag. A paper pins a tag (DESIGN.md §2), so what matters her
 is what would change a *result*: anything that moves numbers, invalidates a
 config hash, or changes what a checkpoint can be resumed from.
 
+## v0.5.1 — 2026-08-30
+
+A GPU-only crash, found by the first GPU sweep this library has ever had.
+
+**This changes no numbers.** On CPU nothing here can execute differently: the
+bug it fixes is unreachable without CUDA, and the collocation cloud drawn for a
+given seed is unchanged. It is a bug-fix tag, and any v0.5.0 result remains
+bit-reproducible under it.
+
+### Fixed
+
+- **DeepXDE's import-time `torch.set_default_device("cuda")` is now undone**,
+  in the same place and for the same reason as its float64 side effect
+  (`geometry/adapters.py`). That call installs a process-global
+  `__torch_function__` mode, after which every tensor factory invoked *without*
+  an explicit device allocates on the GPU — including one handed a CPU
+  generator, which raises rather than merely being slow:
+
+      RuntimeError: Expected a 'cuda' device type for generator but found 'cpu'
+
+  It fired at the first collocation draw of every run in paper 1's first Kaggle
+  sweep, from `_numpy_stream`'s seed draw. This library assumes the opposite
+  everywhere — `Domain.sample` takes a `device`, `_to_tensor` honours it, and
+  `Trainer` builds its sampling generator on CPU deliberately so a cloud is a
+  function of the seed and not of the hardware — so the mode silently
+  contradicted the design for every device-less call, not only this one.
+- `_numpy_stream` draws its numpy seed with `device=generator.device`. Belt and
+  braces: this is the call that proved the assumption was load-bearing, and a
+  generator's own device is the only correct answer for a draw taken from it.
+
+### Why the suite did not catch it
+
+`torch.cuda.is_available()` is False on CPU, so DeepXDE never installs the mode
+and the entire class of bug is invisible there. `tests/unit/test_default_device.py`
+now installs a non-CPU default device with `torch.device("meta")`, which hijacks
+factories the same way, so three of its four tests fail on CPU without this fix.
+The fourth guards the real invariant on a GPU box.
+
 ## v0.5.0 — 2026-08-29
 
 The collocation cloud stops depending on how a run is optimised. Driven by

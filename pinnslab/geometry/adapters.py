@@ -86,6 +86,36 @@ def _use_float64_without_touching_torch() -> None:
     torch.set_default_dtype(previous)
 
 
+def _restore_default_device() -> None:
+    """Undo DeepXDE's *device* side effect, as we already undo its dtype one.
+
+    ``deepxde.backend.pytorch.tensor`` calls ``torch.set_default_device("cuda")``
+    at import time whenever CUDA is available. That installs a process-global
+    ``__torch_function__`` mode, so from then on **every tensor factory called
+    without an explicit device allocates on the GPU** — including ones handed a
+    CPU generator, which is a hard error rather than a slow path.
+
+    That is exactly how it surfaced: ``_numpy_stream`` draws its numpy seed with
+    ``torch.randint(..., generator=<cpu generator>)`` and died with
+    ``Expected a 'cuda' device type for generator but found 'cpu'`` at the first
+    collocation draw of every run in the first GPU sweep (2026-08-30). It cannot
+    reproduce on CPU: ``torch.cuda.is_available()`` is False there, so DeepXDE
+    never sets the mode and the whole class of bug is invisible.
+
+    The rest of this library places tensors explicitly and assumes the default
+    is CPU — ``Domain.sample`` takes a ``device`` argument, ``_to_tensor``
+    honours it, ``Trainer`` builds its sampling generator on CPU on purpose so
+    that a collocation cloud is a function of the seed and not of the hardware
+    it was drawn on. Leaving DeepXDE's mode installed silently contradicts that
+    assumption for every future device-less call. Restore it here, immediately
+    after import, for the same reason and in the same place as the dtype fix.
+
+    DeepXDE itself does not need the mode: pinnslab uses its geometry only, and
+    ``random_points`` and friends return numpy arrays.
+    """
+    torch.set_default_device("cpu")
+
+
 def _verify_backend() -> None:
     name = getattr(dde.backend, "backend_name", None)
     if name != "pytorch":
@@ -100,6 +130,7 @@ def _verify_backend() -> None:
 
 _verify_backend()
 _use_float64_without_touching_torch()
+_restore_default_device()
 
 
 @contextlib.contextmanager
@@ -114,7 +145,14 @@ def _numpy_stream(generator: torch.Generator | None) -> Iterator[None]:
     if generator is None:
         yield
         return
-    seed = int(torch.randint(0, 2**31 - 1, (1,), generator=generator).item())
+    # ``device=`` is explicit even though _restore_default_device() should make
+    # it redundant: this exact call is the one that broke, and a generator's
+    # own device is the only correct answer for a draw taken from it.
+    seed = int(
+        torch.randint(
+            0, 2**31 - 1, (1,), generator=generator, device=generator.device
+        ).item()
+    )
     state = np.random.get_state()
     try:
         np.random.seed(seed)
