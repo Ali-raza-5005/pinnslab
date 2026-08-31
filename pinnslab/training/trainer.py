@@ -137,6 +137,7 @@ class Trainer:
         on_resample: HookFn | None = None,
         checkpoints: CheckpointManager | None = None,
         allow_config_change: bool = False,
+        work_fn: Callable[[], int] | None = None,
     ) -> None:
         self.cfg = cfg
         self.ctx = ctx
@@ -148,6 +149,12 @@ class Trainer:
         self.eval_fn = eval_fn
         self.on_resample = on_resample
         self.allow_config_change = allow_config_change
+        # The loop deliberately does not know what "work" is. A paper counting
+        # residual evaluations, function evaluations or matrix-vector products
+        # passes a reader for its own counter, and StageSpec.max_work is then
+        # denominated in that unit. Keeping the unit out of the library is the
+        # same choice as keeping PDEs out of it.
+        self.work_fn = work_fn
         self.checkpoints = checkpoints or CheckpointManager(
             run.checkpoint_dir,
             cfg.checkpoint,
@@ -190,6 +197,11 @@ class Trainer:
         self._best_metrics: dict[str, float] = {}
         self._best_step: int | None = None
         self._timings: dict[str, float] = {}
+        #: The work counter as it read when the current stage began. Restored
+        #: from the checkpoint on resume, so a stage's budget is measured from
+        #: the origin the interrupted run used rather than from wherever the
+        #: counter happens to sit when a new session starts.
+        self._work_at_stage_start = 0
         self._last_residuals: dict[str, torch.Tensor] = {}
         self._last_metrics: dict[str, float] = {}
         self._current_groups: list[_OptimizerGroup] = []
@@ -339,18 +351,33 @@ class Trainer:
                 # test_gradient_free_resume_is_bit_exact).
                 self._restore_optimizers(groups)
             else:
+                # A fresh stage measures its work budget from here. Set before
+                # the save below, so the checkpoint that save writes already
+                # carries the right origin.
+                self._work_at_stage_start = self._work()
                 self._save(global_step, stage_index, 0)
 
             self.state.stage_index = stage_index
             self.state.stage_name = stage.name
             log.info(
-                "stage %d/%d %r: %d steps from step_in_stage=%d",
+                "stage %d/%d %r: %d steps%s from step_in_stage=%d",
                 stage_index + 1,
                 len(self.cfg.stages),
                 stage.name,
                 stage.steps,
+                f", max_work={stage.max_work}" if stage.max_work else "",
                 step_in_stage,
             )
+            if stage.max_work is not None and self.work_fn is None:
+                # Refuse rather than run: the config asks for a compute budget
+                # and nothing is counting compute, so the stage would silently
+                # fall back to its step bound and the run would look budgeted
+                # while being nothing of the kind.
+                raise ValueError(
+                    f"stage {stage.name!r} sets max_work={stage.max_work} but the "
+                    "Trainer was built without work_fn, so no work is counted. "
+                    "Pass work_fn=<reader of your counter>, or drop max_work."
+                )
 
             stage_seconds = 0.0
             while step_in_stage < stage.steps:
@@ -401,6 +428,16 @@ class Trainer:
                 if self.checkpoints.due(global_step):
                     self._save(global_step, stage_index, step_in_stage)
 
+                # Checked *after* the step, never before. A step's cost is not
+                # knowable in advance -- an L-BFGS line search may probe once or
+                # twenty times -- so the choice is between overshooting the
+                # budget by at most one step and stopping short by an unknown
+                # amount. Overshoot is bounded, identical in kind across arms,
+                # and reported below; undershoot is none of those.
+                if self._work_budget_spent(stage):
+                    break
+
+            self._record_stage_work(stage)
             self._timings[_stage_key(stage)] = (
                 self._timings.get(_stage_key(stage), 0.0) + stage_seconds
             )
@@ -620,6 +657,36 @@ class Trainer:
                 metrics[f"residual/{name}"] = float((value.detach() ** 2).mean())
         return metrics
 
+    # -- work budgets ---------------------------------------------------------
+
+    def _work(self) -> int:
+        """The caller's work counter, or 0 when nothing is counting."""
+        return 0 if self.work_fn is None else int(self.work_fn())
+
+    def _work_in_stage(self) -> int:
+        return self._work() - self._work_at_stage_start
+
+    def _work_budget_spent(self, stage: StageSpec) -> bool:
+        return stage.max_work is not None and self._work_in_stage() >= stage.max_work
+
+    def _record_stage_work(self, stage: StageSpec) -> None:
+        """Report what the stage actually spent, and whether the budget bound.
+
+        Both numbers matter and neither can be recovered afterwards. The spend
+        is the parity currency itself. The flag separates "this stage stopped
+        because it had spent its budget" from "this stage ran out of steps
+        first", which is a different experiment wearing the same config: a
+        non-binding budget means the arm was never actually held to it, and a
+        comparison built on that is not at parity however the table looks.
+        """
+        if self.work_fn is None:
+            return
+        self._timings[f"stage.{stage.name}.work"] = float(self._work_in_stage())
+        if stage.max_work is not None:
+            self._timings[f"stage.{stage.name}.hit_work_budget"] = float(
+                self._work_budget_spent(stage)
+            )
+
     def _payload(
         self, step: int, stage_index: int, steps_in_stage: int
     ) -> CheckpointPayload:
@@ -642,6 +709,7 @@ class Trainer:
             best_metrics=self._best_metrics,
             best_step=self._best_step,
             timings=dict(self._timings),
+            work_at_stage_start=self._work_at_stage_start,
         )
 
     def _save(self, step: int, stage_index: int, steps_in_stage: int) -> None:
@@ -690,6 +758,12 @@ class Trainer:
         self._best_metrics = dict(payload.best_metrics)
         self._best_step = payload.best_step
         self._timings = dict(payload.timings)
+        # Restored *before* the loop runs, so a resumed stage measures
+        # ``max_work`` from the origin the interrupted run used. Taking a fresh
+        # reading here instead would reset the budget on every resume, and the
+        # runs most likely to be interrupted are the slowest ones — so the arms
+        # that would silently overspend are exactly the expensive ones.
+        self._work_at_stage_start = payload.work_at_stage_start
         self._pending_optimizer_state = payload.optimizers
         self._current_groups = []
         log.info(

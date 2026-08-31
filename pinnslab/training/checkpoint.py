@@ -49,7 +49,13 @@ BEST_NAME = "best.pt"
 #: checkpoints are refused rather than loaded with an empty cloud, because a
 #: resampling run resumed without its cloud is the exact silent-wrong-experiment
 #: this field exists to prevent.
-_FORMAT_VERSION = 2
+#:
+#: 3 (2026-08-31): the payload gained ``work_at_stage_start``, for
+#: ``StageSpec.max_work``. Version 2 checkpoints are refused rather than loaded
+#: with a zero, for the same reason as above: a stage resumed with the wrong
+#: origin for its work budget would spend the budget twice, silently, and
+#: over-spending compute is precisely the failure the budget exists to prevent.
+_FORMAT_VERSION = 3
 
 
 @dataclass
@@ -79,6 +85,11 @@ class CheckpointPayload:
     best_metrics: dict[str, float] = field(default_factory=dict)
     best_step: int | None = None
     timings: dict[str, float] = field(default_factory=dict)
+    #: The caller's work counter as it read at the *start of the current
+    #: stage*, so a resumed stage measures its ``StageSpec.max_work`` from the
+    #: same origin the interrupted one did. Zero when no ``work_fn`` is
+    #: supplied, which is the case for every run that does not budget on work.
+    work_at_stage_start: int = 0
     pinnslab_version: str = pinnslab.__version__
     format_version: int = _FORMAT_VERSION
 

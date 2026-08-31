@@ -53,7 +53,30 @@ REL_L2_TARGET = 2e-3
 #: The frozen identity of the config above. Not decoration: it is what a result
 #: row joins on, and a silent change to the YAML would otherwise re-target the
 #: threshold at a different experiment.
-CONFIG_HASH = "0ebf401fda6fa1d0"
+#:
+#: **Changed 2026-08-31 (v0.5.2), 0ebf401fda6fa1d0 -> 9b9fdbeb40b9ef01**, and
+#: this test is why the change was noticed rather than discovered later from a
+#: sweep that silently refused to join. ``identity()`` hashes
+#: ``model_dump(mode="json")``, which includes fields at their defaults, so
+#: adding ``StageSpec.max_work`` re-hashed **every config in existence** even
+#: though no config sets it.
+#:
+#: Consequences, stated so nobody has to rediscover them:
+#:
+#: * Stored results are unaffected — a row carries the hash it was written with
+#:   and nothing recomputes it, so old runs stay internally consistent and
+#:   joinable with each other.
+#: * Re-running a pre-v0.5.2 config under v0.5.2 produces a **different**
+#:   ``config_hash``, so its rows will not group with the originals. Pin the
+#:   library version per study; paper-01 pins v0.5.1 and is unaffected.
+#: * ``sampling_identity_hash`` is **not** affected: it covers
+#:   ``problem + sampling + dtype`` and ``stages`` is not in it. Pairing across
+#:   optimizer arms therefore survives, which is the property that matters most.
+#:
+#: The general problem — every additive schema change invalidates every hash —
+#: is real and unaddressed. Excluding unset optional fields from the dump would
+#: fix it permanently at the cost of one more break now. Not done unilaterally.
+CONFIG_HASH = "9b9fdbeb40b9ef01"
 
 
 @pytest.fixture(scope="module")

@@ -7,6 +7,6 @@ field (``RunConfig.dtype``, default ``float64``) applied by
 the config hash and is recorded on every result row (DESIGN.md §5).
 """
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 __all__ = ["__version__"]

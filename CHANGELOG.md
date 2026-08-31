@@ -4,6 +4,84 @@ Notable changes per tag. A paper pins a tag (DESIGN.md §2), so what matters her
 is what would change a *result*: anything that moves numbers, invalidates a
 config hash, or changes what a checkpoint can be resumed from.
 
+## v0.5.2 — 2026-08-31
+
+Stages can be budgeted in **work** rather than in steps.
+
+**This invalidates every config hash.** No numbers move and no behaviour changes
+for a config that does not set the new field, but `identity()` hashes
+`model_dump(mode="json")`, which includes fields at their defaults — so adding
+one optional field re-hashed every config in existence. Consequences:
+
+- Stored results are unaffected: a row carries the hash it was written with and
+  nothing recomputes it, so existing runs stay internally consistent.
+- **Re-running a pre-v0.5.2 config under v0.5.2 yields a different
+  `config_hash`**, and its rows will not group with the originals. Pin per study.
+- `sampling_identity_hash` is **not** affected — it covers
+  `problem + sampling + dtype`, and `stages` is not in it. Pairing across
+  optimizer arms survives, which is the property that matters.
+- Checkpoint format is now **3**; version 2 checkpoints are refused rather than
+  loaded with a zeroed work origin, for the same reason version 1 was refused.
+
+### Added
+
+- **`StageSpec.max_work`** — stop a stage once it has consumed this much work,
+  where work is whatever the caller's new `Trainer(work_fn=...)` counts. The
+  library stays ignorant of the unit; a paper counting residual evaluations,
+  function evaluations or matrix-vector products passes a reader for its own
+  counter.
+
+  **Why.** A step count is not a budget for any optimizer whose per-step cost
+  depends on the data. Measured in paper-01: five runs of an identical 1250-step
+  L-BFGS stage, differing only in seed, consumed **6,855 to 11,574** residual
+  evaluations — a **1.7x spread**. Two arms given "the same 1250 steps" are not
+  at equal compute, and choosing per-seed step counts to hit a target means
+  reading the budget off the outcome.
+
+  Measured after, on a synthetic L-BFGS stage across five seeds:
+
+  | budget | spread | worst deviation |
+  | --- | --- | --- |
+  | 200 | 1.059x | 7.000% |
+  | 1,000 | 1.008x | 1.000% |
+  | 5,000 | 1.002x | 0.220% |
+  | 15,001 | **1.000x** | **0.007%** |
+
+  The budget is checked **after** each step, never before: a step's cost is not
+  knowable in advance, so the choice is between overshooting by at most one step
+  and stopping short by an unknown amount. The overshoot is a fixed absolute
+  quantity, so its relative size falls as the budget grows — which is why the
+  table above converges.
+
+  `steps` remains required and becomes a **safety bound**: it caps the run if
+  the work counter stalls. Budgets are **per stage**, mirroring `steps`, so a
+  schedule's total is the sum of its stages.
+
+- **`Trainer(work_fn=...)`** — a reader for the caller's work counter.
+- **Reported, not inferred**: run timings gain `stage.<name>.work` (what the
+  stage spent) and, when a budget is set, `stage.<name>.hit_work_budget`
+  (whether the budget is what stopped it). A stage that ran out of steps first
+  had a *non-binding* budget, and that is a different experiment from one that
+  spent it — invisible in a results table, so it is recorded.
+- **`CheckpointPayload.work_at_stage_start`** — the budget survives a resume. A
+  stage resumed with a fresh origin would spend its allowance twice, and the
+  runs most likely to be interrupted are the slow ones, so the arms that would
+  silently overspend are exactly the expensive ones.
+
+### Refused
+
+- A stage that sets `max_work` while the `Trainer` has no `work_fn` now raises.
+  Falling back to the step bound would produce a run that looks budgeted and is
+  not, with the config, the log and the results table all agreeing with each
+  other — the most expensive shape this feature could fail in.
+
+### Known and unaddressed
+
+Every additive schema change invalidates every config hash, because `identity()`
+dumps fields at their defaults. Excluding unset optional fields would fix this
+permanently at the cost of one further break. Not done here; it is a change to
+identity semantics and deserves its own decision.
+
 ## v0.5.1 — 2026-08-30
 
 A GPU-only crash, found by the first GPU sweep this library has ever had.

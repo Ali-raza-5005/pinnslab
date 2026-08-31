@@ -238,6 +238,35 @@ class StageSpec(Spec):
     steps: int = Field(gt=0)
     #: Steps between resampling hooks; ``None`` disables resampling.
     resample_every: int | None = Field(default=None, gt=0)
+    #: Stop this stage once it has consumed this much *work*, where work is
+    #: whatever the caller's ``Trainer(work_fn=...)`` counts — residual
+    #: evaluations, function evaluations, matrix-vector products. ``None``
+    #: means the stage is bounded by ``steps`` alone, which is the old
+    #: behaviour and stays the default.
+    #:
+    #: **Why this exists.** A step count is not a budget for any optimizer
+    #: whose per-step cost depends on the data. Measured: five runs of an
+    #: identical 1250-step L-BFGS stage, differing only in seed, consumed
+    #: 6,855 to 11,574 residual evaluations — a 1.7x spread. Two arms given
+    #: "the same 1250 steps" are therefore not at equal compute, and picking
+    #: per-seed step counts to hit a target means choosing the budget from the
+    #: outcome, which is not a budget at all.
+    #:
+    #: Set ``steps`` to a generous bound and ``max_work`` to the real budget,
+    #: and every arm lands within one step's cost of the same number.
+    #: ``steps`` then stops being the budget and becomes a safety bound, which
+    #: is why it stays required: it caps the run if the work counter stalls.
+    #:
+    #: **The budget is per stage, not cumulative**, mirroring ``steps``, so a
+    #: schedule's total is the sum of its stages and each stage's allowance is
+    #: pinned independently of what earlier ones happened to spend.
+    #:
+    #: Whether a stage stopped on work or on steps is **reported**, not
+    #: inferred: the run's timings carry ``stage.<name>.work`` (what it spent)
+    #: and ``stage.<name>.hit_work_budget`` (whether the budget is what stopped
+    #: it). A stage that ran out of steps first had a non-binding budget, and
+    #: that is a different experiment from one that spent it.
+    max_work: int | None = Field(default=None, gt=0)
 
 
 class EvalSpec(Spec):
