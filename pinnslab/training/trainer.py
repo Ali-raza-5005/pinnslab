@@ -418,23 +418,32 @@ class Trainer:
                 if self._target_is_free_every_step():
                     self._track_target(global_step, self._step_metrics(float(loss)))
 
+                # Checked *after* the step, never before. A step's cost is not
+                # knowable in advance -- an L-BFGS line search may probe once or
+                # twenty times -- so the choice is between overshooting the
+                # budget by at most one step and stopping short by an unknown
+                # amount. Overshoot is bounded, identical in kind across arms,
+                # and reported by _record_stage_work; undershoot is none of those.
+                #
+                # Evaluated here, before the trace check, because `is_last` has
+                # to know about it: a stage bounded by work never reaches
+                # `stage.steps`, so testing that alone silently disables
+                # `record_last`. The run then reports metrics from whichever
+                # scheduled trace point happened to fire last rather than from
+                # the end of training -- a wrong final rel-L2 in a completed
+                # run, with nothing anywhere saying so. Caught by the first
+                # budgeted L-BFGS run on a real problem.
+                budget_spent = self._work_budget_spent(stage)
                 is_last = (
-                    step_in_stage == stage.steps
-                    and stage_index == len(self.cfg.stages) - 1
-                )
+                    step_in_stage == stage.steps or budget_spent
+                ) and stage_index == len(self.cfg.stages) - 1
                 if self.cfg.logging.trace.should_record(global_step, is_last=is_last):
                     self._record(global_step, stage_index, step_in_stage, float(loss))
 
                 if self.checkpoints.due(global_step):
                     self._save(global_step, stage_index, step_in_stage)
 
-                # Checked *after* the step, never before. A step's cost is not
-                # knowable in advance -- an L-BFGS line search may probe once or
-                # twenty times -- so the choice is between overshooting the
-                # budget by at most one step and stopping short by an unknown
-                # amount. Overshoot is bounded, identical in kind across arms,
-                # and reported below; undershoot is none of those.
-                if self._work_budget_spent(stage):
+                if budget_spent:
                     break
 
             self._record_stage_work(stage)

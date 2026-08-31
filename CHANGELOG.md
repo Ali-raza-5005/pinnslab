@@ -68,6 +68,23 @@ one optional field re-hashed every config in existence. Consequences:
   runs most likely to be interrupted are the slow ones, so the arms that would
   silently overspend are exactly the expensive ones.
 
+### Fixed, before release
+
+- **`record_last` fired on the step bound only**, so a stage that ended on its
+  work budget never forced a final trace point. `is_last` tested
+  `step_in_stage == stage.steps`, and a work-bounded stage never reaches that —
+  `steps` is deliberately set unreachably high. The run then reported metrics
+  from whichever scheduled trace point happened to fire last: on the first
+  budgeted L-BFGS run on a real problem the row claimed 354 residual
+  evaluations while the accounting sidecar, reading the counter directly, said
+  401. **A completed run with a stale final metric and nothing anywhere saying
+  so**, in the parity currency itself.
+
+  Found by running the feature end to end on a real problem rather than only in
+  unit tests, all eleven of which passed throughout. Pinned by
+  `test_the_final_trace_point_is_recorded_when_the_budget_ends_the_stage`,
+  confirmed to fail without the fix.
+
 ### Refused
 
 - A stage that sets `max_work` while the `Trainer` has no `work_fn` now raises.

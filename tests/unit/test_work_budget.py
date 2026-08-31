@@ -23,7 +23,13 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pinnslab.registry.config import CheckpointSpec, OptimizerSpec, StageSpec
+from pinnslab.registry.config import (
+    CheckpointSpec,
+    LoggingSpec,
+    OptimizerSpec,
+    StageSpec,
+)
+from pinnslab.registry.schema import MetricSchedule
 from pinnslab.registry.run import Run
 from pinnslab.registry.schema import RunStatus
 from pinnslab.training.trainer import Trainer
@@ -344,3 +350,45 @@ def test_a_stage_two_budget_is_measured_from_stage_two(results_root):
     assert row.steps_completed == 50, "the second stage did not actually run"
     assert torch.isfinite(torch.tensor(counter.total))
     assert counter.total >= 50
+
+
+def test_the_final_trace_point_is_recorded_when_the_budget_ends_the_stage(
+    results_root,
+):
+    """``record_last`` must fire on a work-bounded stage, not only a step-bounded one.
+
+    The regression this pins: ``is_last`` originally tested
+    ``step_in_stage == stage.steps``, and a stage bounded by work never reaches
+    that -- ``steps`` is deliberately set unreachably high. So the last trace
+    point was never forced, and the run reported metrics from whichever
+    scheduled point happened to fire last instead of from the end of training.
+
+    A completed run with a stale final rel-L2 and nothing anywhere saying so is
+    the worst failure shape in this repo. Found by the first budgeted L-BFGS run
+    on a real problem, where the row said 354 evaluations while the stage had
+    demonstrably spent 400.
+    """
+    counter = Counter()
+    cfg = toy_config(
+        stages=[
+            StageSpec(
+                name="adam",
+                steps=10_000,
+                max_work=97,  # not a multiple of the trace cadence, on purpose
+                optimizers=[OptimizerSpec(lr=1e-2)],
+            )
+        ],
+        logging=LoggingSpec(
+            trace=MetricSchedule(every=10, record_first=True, record_last=True)
+        ),
+    )
+    trainer = build(cfg, results_root, counter)
+    row = trainer.fit()
+
+    trace = trainer.run.read_trace()
+    assert trace[-1].step == row.steps_completed, (
+        f"last trace point is at step {trace[-1].step} but the run ended at "
+        f"{row.steps_completed}; record_last did not fire"
+    )
+    # The row's own numbers must come from that final point, not an earlier one.
+    assert row.final_metrics["loss"] == pytest.approx(trace[-1].metrics["loss"])
